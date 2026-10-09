@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Metabase Claude Studio</title>
+  <link rel="icon" type="image/svg+xml" href="/static/icon.svg">
+  <script src="/static/theme.js"></script>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="app" id="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <img class="logo" src="/static/icon.svg" width="30" height="30" alt="">
+        <span class="brand-text"><span>Metabase Claude Studio</span><small>for Postgres</small></span>
+      </div>
+      <button id="newDash" class="btn soft wide" type="button"><span>New dashboard</span></button>
+      <div class="side-label">Dashboards</div>
+      <nav id="list" class="nav" aria-label="Dashboards"></nav>
+      <div class="side-links">
+        <button id="openSettings" class="nav-item" type="button"><span class="nav-text"><span class="name">Settings</span></span></button>
+        <button id="themeBtn" class="btn ghost small square" type="button" aria-label="Switch between light and dark" title="Light or dark"></button>
+      </div>
+      <p id="sideFoot" class="side-foot">
+        <span>Read-only. The database is queried only when a card loads, when you refresh, or when you ask Claude.</span>
+      </p>
+    </aside>
+
+    <main class="main">
+      <header id="top" class="topbar" hidden>
+        <div class="titles">
+          <h1 id="title"></h1>
+          <span id="status"></span>
+        </div>
+        <div class="top-actions">
+          <button id="refreshAll" class="btn" type="button" title="Run every card's query again"><span>Refresh data</span></button>
+          <button id="openLive" class="btn" type="button" hidden><span>Open in Metabase</span></button>
+          <button id="goLive" class="btn primary" type="button" disabled><span>Go live</span></button>
+          <button id="showAssist" class="btn ghost" type="button" hidden><span>Ask Claude</span></button>
+        </div>
+      </header>
+      <div class="content">
+        <div id="dashPage">
+          <p id="desc" class="lede" hidden></p>
+          <div id="notice" class="notice" role="status" hidden></div>
+          <div id="filters" class="filters" hidden></div>
+          <div id="grid" class="grid"></div>
+          <div id="empty" class="empty" hidden>
+            <div id="emptyMark" class="empty-mark"></div>
+            <h2>No dashboards yet</h2>
+            <p>Describe the one you want and Claude plans it, then builds it here with your data.</p>
+            <button id="emptyNew" class="btn primary" type="button"><span>New dashboard</span></button>
+          </div>
+        </div>
+        <div id="settingsPage" hidden></div>
+      </div>
+    </main>
+
+    <aside class="assist" id="assist" aria-label="Ask Claude">
+      <header class="assist-head">
+        <div id="assistMark" class="assist-mark"></div>
+        <div class="assist-heading">
+          <div class="assist-title">Ask Claude</div>
+          <div class="assist-context" id="assistContext"></div>
+        </div>
+        <button id="assistClear" class="btn ghost small square" type="button" aria-label="Clear this conversation"
+                title="Forget this conversation. The dashboard itself is not changed."></button>
+        <button id="hideAssist" class="btn ghost small square" type="button" aria-label="Hide this panel" title="Hide this panel"></button>
+      </header>
+      <div class="assist-thread" id="thread">
+        <div id="messages"></div>
+        <div id="activity" aria-live="polite"></div>
+      </div>
+      <form class="assist-form" id="askForm">
+        <div class="composer">
+          <label class="sr-only" for="askText">Your request</label>
+          <textarea id="askText" rows="2"></textarea>
+          <div class="composer-foot">
+            <span class="assist-hint" id="askHint"></span>
+            <button id="stopBtn" class="btn small danger" type="button" hidden><span>Stop</span></button>
+            <button id="sendBtn" class="btn primary small square" type="submit" aria-label="Send" title="Send (Enter)"></button>
+          </div>
+        </div>
+      </form>
+    </aside>
+  </div>
+  <dialog id="liveDialog" class="modal"></dialog>
+  <script src="/static/vendor/echarts.min.js"></script>
+  <script src="/static/settings.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

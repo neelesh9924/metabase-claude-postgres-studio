@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+
+# Everything personal: settings, saved secrets, the table list, conversations, logs.
+data/
+
+# Your own dashboards. The example the app starts with is in examples/.
+dashboards/
+
+# Never here, wherever a copy turns up.
+.env
+.env.*
