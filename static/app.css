@@ -65,6 +65,7 @@ p { margin: 0; }
 .side-label { padding: 20px 10px 6px; font-size: 11.5px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase;
   color: var(--text-3); }
 .nav { flex: 1; min-height: 0; display: grid; gap: 2px; align-content: start; overflow: hidden auto; }
+.nav.drafts { flex: none; max-height: 34vh; }
 .nav-item { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 10px; min-width: 0; padding: 7px 10px;
   border-radius: 8px; color: var(--text-2); cursor: pointer; transition: background .12s, color .12s; }
 .nav-item:hover { background: var(--surface-2); color: var(--text); }
@@ -164,6 +165,11 @@ p { margin: 0; }
 @container (max-width: 420px) { .card-meta { display: none; } }
 .flag { padding: 1px 7px; border-radius: 999px; background: var(--warn-soft); color: var(--warn); font-size: 11px; font-weight: 600;
   white-space: nowrap; }
+.card-flags { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 16px 0; }
+button.flag { border: 0; font-family: inherit; cursor: pointer; }
+button.flag:hover { filter: brightness(.96); }
+button.flag:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.flag.shown { background: var(--bad-soft); color: var(--bad); }
 
 .card-tools { position: absolute; top: 8px; right: 8px; z-index: 2; display: flex; gap: 2px; padding: 3px; opacity: 0;
   background: var(--surface); border: 1px solid var(--line); border-radius: 9px; box-shadow: var(--shadow-2);
@@ -349,6 +355,8 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .live-box ul { margin: 4px 0 0; padding-left: 18px; }
 .live-box.stop { background: var(--bad-soft); color: var(--bad); }
 .live-box.warn { background: var(--warn-soft); color: var(--warn-ink); }
+.check { display: flex; align-items: flex-start; gap: 8px; margin-top: 8px; font-size: 13.5px; cursor: pointer; }
+.check input { flex: none; margin: 3px 0 0; accent-color: var(--accent); }
 .live-link { padding: 8px 10px; border-radius: var(--radius-s); background: var(--surface-2); font: 12.5px var(--mono);
   overflow-wrap: anywhere; user-select: all; }
 .live-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }

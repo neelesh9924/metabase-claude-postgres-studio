@@ -8,6 +8,7 @@ import atexit
 import hashlib
 import json
 import math
+import shutil
 import threading
 import time
 from datetime import date, datetime, time as clock
@@ -19,6 +20,7 @@ from . import config, guard
 
 IDLE_CLOSE_SECONDS = 20
 MASK = "***"
+SHOWN = "shown"   # the cache folder for results that show personal data
 
 _NUMBER_OIDS = {20, 21, 23, 26, 700, 701, 790, 1700}
 _BOOL_OIDS = {16}
@@ -166,20 +168,25 @@ def _mask(value, kind):
     return MASK
 
 
-def _shape(description, raw, limit):
+def _shape(description, raw, limit, reveal=()):
+    """Rows as the page gets them. A hidden column is marked "pii"; `reveal` names the personal ones the user allowed."""
     columns = [{"name": d.name, "type": _column_type(d.type_code), "pii": False} for d in description]
-    suspect = [i for i, d in enumerate(description) if guard.is_pii_column(d.name)]
+    kinds = {i: guard.sensitivity(d.name) for i, d in enumerate(description)}
+    shown = [i for i, kind in kinds.items() if kind == "personal" and description[i].name in reveal]
+    hidden = [i for i, kind in kinds.items() if kind and i not in shown]
     truncated = len(raw) > limit
     rows = []
     for record in raw[:limit]:
         row = [_plain(v) for v in record]
-        for i in suspect:
+        for i in shown:
+            if _mask(row[i], columns[i]["type"]) == MASK:
+                columns[i].update(sensitive="personal", revealed=True)
+        for i in hidden:
             row[i] = _mask(row[i], columns[i]["type"])
         rows.append(row)
-    for i in suspect:
+    for i in hidden:
         if any(row[i] == MASK for row in rows):
-            columns[i]["type"] = "text"
-            columns[i]["pii"] = True
+            columns[i].update(type="text", pii=True, sensitive=kinds[i])
     return columns, rows, truncated
 
 
@@ -201,9 +208,10 @@ def _log(source, status, sql, ms=None, rows=None, cost=None):
         pass
 
 
-def run(sql, limit=None, allow_heavy=False, source="cli", database=None):
+def run(sql, limit=None, allow_heavy=False, source="cli", database=None, reveal=()):
     """Run one SELECT on one database and return its columns and rows.
 
+    Personal-data columns come back hidden, except those named in `reveal`.
     Raises guard.Rejected, Heavy or QueryError.
     """
     global _last_used
@@ -239,8 +247,9 @@ def run(sql, limit=None, allow_heavy=False, source="cli", database=None):
         finally:
             _end_transaction(entry["id"])
             _last_used = time.time()
-    columns, rows, truncated = _shape(description, raw, limit)
-    _log(where, "ok", clean, ms=ms, rows=len(rows), cost=cost)
+    columns, rows, truncated = _shape(description, raw, limit, reveal)
+    revealed = [c["name"] for c in columns if c.get("revealed")]
+    _log(where, "ok, shows " + ", ".join(revealed) if revealed else "ok", clean, ms=ms, rows=len(rows), cost=cost)
     return {
         "columns": columns,
         "rows": rows,
@@ -292,23 +301,40 @@ def start_idle_closer():
     threading.Thread(target=loop, daemon=True, name="idle-closer").start()
 
 
-def sql_hash(sql, database=None):
+def sql_hash(sql, database=None, reveal=()):
     """Names a query's saved result. The first database keeps the names it had when it was the only one."""
     entry = config.database(database)
     ident = entry["id"] if entry else (database or None)
     text = sql.strip() if ident in (None, config.MAIN) else f"{ident}\n{sql.strip()}"
+    if reveal:
+        text += "\nshown: " + ", ".join(sorted(reveal))
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
-def cache_get(sql, database=None):
-    path = config.CACHE_DIR / f"{sql_hash(sql, database)}.json"
+def _cache_file(sql, database, reveal):
+    # Results that show personal data are kept apart, so they can all be dropped at once.
+    folder = config.CACHE_DIR / SHOWN if reveal else config.CACHE_DIR
+    return folder / f"{sql_hash(sql, database, reveal)}.json"
+
+
+def cache_get(sql, database=None, reveal=()):
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        result = json.loads(_cache_file(sql, database, reveal).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    for column in result["columns"]:
+        # A result saved before hidden columns said which kind they are.
+        if column.get("pii") and not column.get("sensitive"):
+            column["sensitive"] = guard.sensitivity(column["name"]) or "secret"
+    return result
 
 
-def cache_put(sql, result, database=None):
-    config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    path = config.CACHE_DIR / f"{sql_hash(sql, database)}.json"
+def cache_put(sql, result, database=None, reveal=()):
+    path = _cache_file(sql, database, reveal)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(result), encoding="utf-8")
+
+
+def cache_forget_shown():
+    """Drop every saved result that shows personal data. Those cards run again when next opened."""
+    shutil.rmtree(config.CACHE_DIR / SHOWN, ignore_errors=True)

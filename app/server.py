@@ -153,6 +153,7 @@ class Handler(BaseHTTPRequestHandler):
             for dashboard in found:
                 dashboard["metabase"] = metabase.remembered(dashboard["slug"])
             return self._json({"dashboards": found, "assistant": self.studio.assistant.state(),
+                               "drafts": self.studio.assistant.drafts(),
                                "setup": setup_state(), "databases": databases_state(), "app": config.APP_NAME})
         if url.path == "/api/live":
             # Asks Metabase whether a published dashboard is still there. Metabase only, never the database.
@@ -177,8 +178,8 @@ class Handler(BaseHTTPRequestHandler):
                     card["filter_error"] = str(exc)
                     continue
                 # The page tells a changed card by this: the query as it runs for the filters picked.
-                card["sql_hash"] = db.sql_hash(runs, spec["database"])
-                spec["data"][card["key"]] = db.cache_get(runs, spec["database"])
+                card["sql_hash"] = db.sql_hash(runs, spec["database"], card["shown"])
+                spec["data"][card["key"]] = db.cache_get(runs, spec["database"], card["shown"])
             spec["options"] = {}
             for entry in spec["filters"]:
                 listing = specs.options_query(spec, entry["key"])
@@ -212,6 +213,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._run_card(body)
         if path == "/api/options":
             return self._options(body)
+        if path == "/api/show":
+            return self._show(body)
         if path == "/api/remove":
             return self._remove(body)
         if path.startswith("/api/golive") or path == "/api/open":
@@ -219,9 +222,11 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/settings"):
             return self._settings(path, body)
         if path == "/api/ask":
-            error = assistant.ask(body.get("mode"), body.get("slug"), body.get("text"), body.get("database"))
+            error = assistant.ask(body.get("mode"), body.get("slug"), body.get("text"), body.get("database"), body.get("draft"))
         elif path == "/api/build":
-            error = assistant.build(body.get("plan"))
+            error = assistant.build(body.get("plan"), body.get("draft"))
+        elif path == "/api/draft/remove":
+            error = assistant.remove_draft(body.get("key"))
         elif path == "/api/stop":
             error = assistant.stop()
         elif path == "/api/clear":
@@ -238,13 +243,34 @@ class Handler(BaseHTTPRequestHandler):
         source = f"preview {spec['slug']}/{card['key']}"
         try:
             runs = specs.query(card, spec, body.get("values"))
-            result = db.run(runs, allow_heavy=bool(body.get("allow_heavy")), source=source, database=spec["database"])
+            result = db.run(runs, allow_heavy=bool(body.get("allow_heavy")), source=source, database=spec["database"],
+                            reveal=card["shown"])
         except db.Heavy as exc:
             return self._json({"heavy": {"cost": exc.cost, "limit": config.MAX_PLAN_COST}})
         except (db.QueryError, guard.Rejected, filters.FilterError) as exc:
             return self._json({"error": str(exc)})
-        db.cache_put(runs, result, spec["database"])
-        return self._json({"result": result, "sql_hash": db.sql_hash(runs, spec["database"])})
+        db.cache_put(runs, result, spec["database"], card["shown"])
+        return self._json({"result": result, "sql_hash": db.sql_hash(runs, spec["database"], card["shown"])})
+
+    def _show(self, body):
+        """The user's say on showing personal data in one card. Only the page can ask; Claude has no way to."""
+        spec = specs.load(body.get("slug"))
+        card = next((c for c in (spec or {}).get("cards", []) if c["key"] == body.get("key")), None)
+        if card is None or not card["sql"]:
+            return self._json({"error": "No such card."}, 404)
+        columns = [c for c in body.get("columns") or [] if isinstance(c, str)] if isinstance(body.get("columns"), list) else []
+        if body.get("show") is not True:
+            specs.show(spec["slug"], card["key"], columns, False)
+            db.cache_forget_shown()
+            return self._json({"ok": True})
+        secret = [c for c in columns if guard.sensitivity(c) == "secret"]
+        if secret:
+            return self._json({"error": f"{', '.join(secret)} cannot be shown: passwords, codes and tokens stay hidden."})
+        personal = [c for c in columns if guard.sensitivity(c) == "personal"]
+        if not personal:
+            return self._json({"error": "There is nothing hidden to show."})
+        specs.show(spec["slug"], card["key"], personal, True)
+        return self._json({"ok": True})
 
     def _options(self, body):
         """The choices of one filter, from the query its dashboard names for them."""
@@ -266,6 +292,7 @@ class Handler(BaseHTTPRequestHandler):
         job = self.studio.assistant.job
         if job and job.status == "running" and slug in (job.slug, job.key):
             return self._json({"error": "Claude is still working on this dashboard."})
+        showed = bool(specs.shown(slug)) if isinstance(slug, str) else False
         try:
             moved = specs.remove(slug)
         except OSError:
@@ -274,6 +301,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": "No such dashboard."})
         self.studio.assistant.discard(slug, moved)
         metabase.forget(slug)
+        if showed:
+            db.cache_forget_shown()
         return self._json({"ok": True})
 
     def _go_live(self, path, body):
@@ -285,7 +314,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/golive/plan":
                 return self._json({"plan": metabase.plan(slug)})
             if path == "/api/golive":
-                return self._json({"published": metabase.publish(slug)})
+                return self._json({"published": metabase.publish(slug, sensitive_ok=body.get("sensitive_ok") is True)})
             # Opens only the link Go live recorded, in the browser where the user is signed in to Metabase.
             link = specs.published(slug).get("url") if specs.load(slug) else None
             if not link or not config.METABASE_URL or not link.startswith(config.METABASE_URL.rstrip("/") + "/dashboard/"):

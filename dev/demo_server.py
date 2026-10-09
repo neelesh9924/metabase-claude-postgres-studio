@@ -7,6 +7,8 @@ in-memory Metabase from the tests.
 Usage: python dev/demo_server.py [port]        (default 8790)
        DEMO_SETUP=1          start as a new install, on the setup page
        DEMO_TWO=1            two databases, "Shop" and "Marketing", with a dashboard on each
+       DEMO_PERSONAL=1       a "Customers" dashboard whose card has phone numbers and emails
+       DEMO_PERSONAL=secret  the same, with a one-time code as well, which is never shown
        DEMO_EMPTY=1          start with no dashboards
        DEMO_NO_COLLECTION=1  make Go live fail the way a missing permission does
 """
@@ -17,6 +19,7 @@ import re
 import shutil
 import sys
 import tempfile
+from collections import namedtuple
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -48,11 +51,24 @@ def _column(name, kind):
     return {"name": name, "type": kind, "pii": False}
 
 
-def canned(sql, limit=None, allow_heavy=False, source="cli", database=None):
+Found = namedtuple("Found", "name type_code")   # a result column as the database driver describes it
+CUSTOMERS = [("Asha Rao", "555-0101", "asha@example.com", "481516", 14), ("Ben Okafor", "555-0102", "ben@example.com", "234208", 11),
+             ("Chen Wei", "555-0103", "chen@example.com", "159265", 9), ("Dalia Haddad", "555-0104", "dalia@example.com", "358979", 7),
+             ("Emil Novak", "555-0105", "emil@example.com", "323846", 6)]
+
+
+def canned(sql, limit=None, allow_heavy=False, source="cli", database=None, reveal=()):
     """Made-up rows shaped like the sample dashboard's queries."""
     text = " ".join(sql.split())
     today = date.today()
     days = [today - timedelta(days=n) for n in range(29, -1, -1)]
+    if "from customers" in text:
+        # Hidden and shown by the app's own code, so the demo behaves as the real thing does.
+        found = [Found("Customer", 25), Found("Phone", 25), Found("Email", 25), Found("otp", 25), Found("Orders", 23)]
+        keep = [i for i, column in enumerate(found) if column.name != "otp" or " otp," in text]
+        columns, rows, _ = db._shape([found[i] for i in keep], [tuple(row[i] for i in keep) for row in CUSTOMERS], 2000, reveal)
+        return {"columns": columns, "rows": rows, "row_count": len(rows), "truncated": False, "ms": 11, "cost": 42.0,
+                "ran_at": datetime.now().isoformat(timespec="seconds")}
     if database == MARKETING:
         if '"Day"' in text:
             columns = [_column("Day", "date"), _column("Leads", "number")]
@@ -166,6 +182,16 @@ LEADS = {
 }
 
 
+PEOPLE = {
+    "dashboard.json": {
+        "name": "Customers",
+        "description": "Made-up people, to show how personal data is hidden until you choose to show it.",
+        "cards": [{"key": "top", "name": "Top customers", "display": "table", "row": 0, "col": 0, "size_x": 16, "size_y": 7}],
+    },
+    "top.sql": 'select name as "Customer", phone as "Phone", email as "Email", orders as "Orders"\nfrom customers\norder by 4 desc\nlimit 5',
+}
+
+
 def write_dashboard(folder, files):
     folder.mkdir(parents=True)
     for name, content in files.items():
@@ -196,6 +222,11 @@ def main():
             write_dashboard(TMP / "dashboards" / "orders", ORDERS)
             if os.environ.get("DEMO_TWO"):
                 write_dashboard(TMP / "dashboards" / "leads", LEADS)
+            if os.environ.get("DEMO_PERSONAL"):
+                people = dict(PEOPLE)
+                if os.environ["DEMO_PERSONAL"] == "secret":
+                    people["top.sql"] = people["top.sql"].replace('email as "Email",', 'email as "Email", otp,')
+                write_dashboard(TMP / "dashboards" / "customers", people)
     config.ROOT = TMP
     config.DASHBOARDS_DIR = TMP / "dashboards"
     fake = FakeMetabase()

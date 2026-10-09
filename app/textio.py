@@ -15,7 +15,11 @@ def format_result(result, show=20):
     total = f"{count}{'+' if result['truncated'] else ''} {'row' if count == 1 else 'rows'}"
     shown = f" (showing {len(rows)})" if len(rows) < count else ""
     out += ["", f"{total}{shown} | {result['ms']} ms | plan cost {result['cost']:,.0f}"]
-    hidden = [c["name"] for c in result["columns"] if c["pii"]]
-    if hidden:
-        out.append("Personal data hidden in: " + ", ".join(hidden) + ". Leave these columns out of cards.")
+    personal = [c["name"] for c in result["columns"] if c["pii"] and c.get("sensitive") == "personal"]
+    secret = [c["name"] for c in result["columns"] if c["pii"] and c.get("sensitive") != "personal"]
+    if personal:
+        out.append("Personal data hidden in: " + ", ".join(personal) + ". Keep such a column only if the user asked for it. "
+                   "Whether its values are shown is the user's own choice in the app.")
+    if secret:
+        out.append("Never shown: " + ", ".join(secret) + ". Leave these columns out of cards.")
     return "\n".join(out)

@@ -36,6 +36,7 @@ No queries in this phase.
    status value means; if a card depends on a guess, list it under the assumptions.
 5. Reply with the plan in the form the request gives. For every table say its size and
    the filter the queries will use, so the user sees what will be read before it is.
+   A personal-data column the user asked for goes under `sensitive`.
 
 ## Phase "build"
 
@@ -48,7 +49,9 @@ Build the approved plan and nothing beyond it.
    send it again unchanged. If a card cannot be made to work in two or three tries,
    drop it and say so.
 3. Look at the rows before trusting them: are the numbers plausible, are there gaps or
-   nulls, is a "Personal data hidden" warning shown? Remove any personal-data column.
+   nulls? A "Personal data hidden" note is expected on a column the user asked for: keep
+   it, and say in your last message that the card holds personal data. Remove such a
+   column the user did not ask for, and any column marked "Never shown".
 4. Write `dashboards/<slug>/dashboard.json` last, once the queries work, so the preview
    never shows a half-made dashboard. When the request gives a `"database"` line, put
    it in exactly as given. The exception is a dashboard with filters (see

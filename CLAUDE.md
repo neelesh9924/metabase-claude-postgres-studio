@@ -29,9 +29,16 @@ The skills `dashboard-build` and `dashboard-edit` hold the order of work for bot
 - Nothing in this project may query on its own: no auto-refresh, no timers, no
   scheduled jobs, no polling of the database.
 
-**Personal data stays out.** No phone, email, one-time code, token, national id,
-password or PIN columns in a card; counts of them are fine. The tool hides such values.
-A "Personal data hidden" flag on a card means that column has to be removed.
+**Personal data is the user's call.** Do not put a phone, email or national-id column
+in a card on your own; counts of them are fine. When the user asks for one, include it:
+name the output column for what it holds (`contact as "Phone"`, `"Email"`), so the
+studio recognises it, and list it under `sensitive` in the plan. The studio gives you
+`***` in place of the values, always. In the preview they stay hidden until the user
+chooses to show them, and Go live asks the user once more. That is how it is meant to
+work: never rename, cast, split or encode a column to get around it.
+
+**Secrets never go in a card.** No password, one-time code, token, PIN or API-key
+column, whoever asks. The studio hides them and Go live refuses them.
 
 **Publishing is the user's.** Never call the Metabase API. A dashboard reaches Metabase
 only when the user presses Go live in the app and confirms. `metabase.json` in a

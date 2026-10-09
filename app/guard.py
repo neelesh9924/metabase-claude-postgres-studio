@@ -19,11 +19,10 @@ _BLOCKED_CALL = re.compile(
     r"|pg_replication_\w+|(query|table|cursor|schema|database)_to_xml\w*)\s*\(",
     re.I,
 )
-PII_COLUMN = re.compile(
-    r"phone|mobile|msisdn|e_?mail|otp|token|aadhaa?r|passw|secret|api_?key"
-    r"|(^|_)pan(_|$)|(^|_)pin(_|$)",
-    re.I,
-)
+# Columns whose values are hidden, told by their name. A personal one is shown when the user
+# says so for that card; a secret one never is.
+PERSONAL_COLUMN = re.compile(r"phone|mobile|msisdn|e_?mail|aadhaa?r|(^|_)pan(_|$)", re.I)
+SECRET_COLUMN = re.compile(r"otp|token|passw|secret|api_?key|(^|_)pin(_|$)", re.I)
 
 
 def _code_only(sql):
@@ -101,5 +100,12 @@ def check(sql):
     return clean
 
 
+def sensitivity(name):
+    """"secret", "personal" or None for a column of this name."""
+    if SECRET_COLUMN.search(name or ""):
+        return "secret"
+    return "personal" if PERSONAL_COLUMN.search(name or "") else None
+
+
 def is_pii_column(name):
-    return bool(PII_COLUMN.search(name or ""))
+    return sensitivity(name) is not None

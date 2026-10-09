@@ -212,21 +212,27 @@ def plan(slug):
         raise MetabaseError("No such dashboard.")
     blockers = list(spec["problems"])
     warnings = []
+    sensitive = []   # personal data the dashboard would publish: the user confirms it, card by card
     cards = [c for c in spec["cards"] if c["sql"]]
     if not cards:
         blockers.append("The dashboard has no card with a query.")
     for card in cards:
         try:
-            result = db.cache_get(specs.query(card, spec), spec["database"])
+            result = db.cache_get(specs.query(card, spec), spec["database"], card["shown"])
         except filters.FilterError as exc:
             blockers.append(f'"{card["name"]}": {exc}')
             continue
         if result is None:
             blockers.append(f'"{card["name"]}" has not drawn yet. Open the dashboard and let every card load.')
             continue
-        hidden = [c["name"] for c in result["columns"] if c.get("pii")]
-        if hidden:
-            blockers.append(f'"{card["name"]}" shows personal data ({", ".join(hidden)}). Remove that column.')
+        # Metabase runs the query as it is written: what is hidden here is not hidden there.
+        flagged = [c for c in result["columns"] if c.get("pii") or c.get("revealed")]
+        secret = [c["name"] for c in flagged if c.get("sensitive") != "personal"]
+        personal = [c["name"] for c in flagged if c.get("sensitive") == "personal"]
+        if secret:
+            blockers.append(f'"{card["name"]}" has a column that is never published ({", ".join(secret)}). Remove that column.')
+        if personal:
+            sensitive.append({"card": card["name"], "columns": personal})
         if (result.get("cost") or 0) > config.MAX_PLAN_COST:
             warnings.append(f'"{card["name"]}" is a heavy query. Everyone who opens the dashboard in Metabase runs it.')
 
@@ -269,6 +275,7 @@ def plan(slug):
                   "update": len([k for k in keys if k in recorded]), "trash": len(gone)},
         "blockers": blockers,
         "warnings": warnings,
+        "sensitive": sensitive,
     }
 
 
@@ -378,12 +385,17 @@ def _dashcards(spec, card_ids, current):
     return out
 
 
-def publish(slug):
-    """Create or update the dashboard in Metabase. Returns its link. Raises MetabaseError."""
+def publish(slug, sensitive_ok=False):
+    """Create or update the dashboard in Metabase. Returns its link. Raises MetabaseError.
+
+    A dashboard with personal data is published only when the user confirmed that.
+    """
     with _lock:
         check = plan(slug)
         if check["blockers"]:
             raise MetabaseError(check["blockers"][0])
+        if check["sensitive"] and not sensitive_ok:
+            raise MetabaseError("This dashboard shows personal data. Confirm that in the Go live window first.")
         spec = specs.load(slug)
         where = check["target"]
         state = specs.published(slug) if check["mode"] == "update" else {}

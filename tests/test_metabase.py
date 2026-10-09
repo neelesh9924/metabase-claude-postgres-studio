@@ -159,12 +159,12 @@ class GoLiveRefusalTest(GoLiveCase):
         self.make(drawn=False)
         self.refused("has not drawn yet")
 
-    def test_personal_data(self):
+    def test_a_secret_column(self):
         self.make()
         flagged = canned_result("x")
-        flagged["columns"] = [{"name": "phone", "type": "text", "pii": True}]
+        flagged["columns"] = [{"name": "otp", "type": "text", "pii": True}]
         self.query("ops", "a", 'select 0 as "N0"', result=flagged)
-        self.refused("personal data (phone)")
+        self.refused("never published (otp)")
 
     def test_files_with_problems(self):
         self.make()

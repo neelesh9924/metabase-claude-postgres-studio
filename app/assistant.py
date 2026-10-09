@@ -4,6 +4,9 @@ A new dashboard takes two runs. The first has no query tool: it reads the table
 snapshot and returns a plan naming the tables it will read. The second runs only
 after the user approves that plan. A change to an existing dashboard is one run.
 
+Until it is built, a new dashboard is a draft: a conversation of its own, kept on disk
+until the user removes it. There can be several.
+
 What the user types only ever lands inside the prompt. The skill, the tools and the
 rules are fixed here.
 """
@@ -20,11 +23,13 @@ from datetime import datetime
 from . import config, schema, specs
 from .claude import MCP_SERVER, ClaudeRefused, ClaudeRunner, RunRequest, ToolPolicy
 
-NEW = "_new"
+DRAFT = "draft-"     # the key of a conversation about a dashboard that is not built yet starts so
+OLD_DRAFT = "_new"   # where the one such conversation was kept before there could be several
 MARK_START = "<<<STUDIO_JSON"
 MARK_END = "STUDIO_JSON>>>"
 MAX_TEXT = 4000
 _KEY = re.compile(r"^[a-z0-9_-]+$")
+_DRAFT_KEY = re.compile(r"^draft-[a-z0-9]{6,32}$")
 
 RULES = (
     "You are running inside a local dashboard studio app. The user watches a panel that shows each "
@@ -48,6 +53,7 @@ PLAN_SHAPE = (
     '"reads": [{"table": "<table>", "size": "<rows, from the table list>", '
     '"filter": "<the indexed column and range the queries will use>"}], '
     '"assumptions": ["<a choice you made for the user>"], '
+    '"sensitive": ["<a personal-data column the user asked for, by the name the card gives it, such as Phone>"], '
     '"left_out": ["<something asked for that the data does not support>"]}'
 )
 READ_TOOLS = ("Read", "Glob", "Grep", "Skill")
@@ -170,7 +176,12 @@ def _clean_plan(data):
         "slug": slug, "name": name, "description": str(data.get("description") or "")[:300],
         "cards": cards, "reads": reads,
         "assumptions": _strings(data.get("assumptions"), 10), "left_out": _strings(data.get("left_out"), 10),
+        "sensitive": _strings(data.get("sensitive"), 10),
     }
+
+
+def new_draft_key():
+    return DRAFT + secrets.token_hex(6)
 
 
 @dataclass
@@ -210,6 +221,8 @@ class Assistant:
         self._lock = threading.RLock()
         self._worker = None
         self._closing = False
+        self._described = {}   # draft key -> (its file's size and time, what the sidebar shows of it)
+        self._adopt_old_draft()
 
     # ---- conversations on disk ----
 
@@ -241,6 +254,96 @@ class Assistant:
             self._save(key, messages)
             return message
 
+    def _forget(self, key):
+        try:
+            self._path(key).unlink()
+        except OSError:
+            pass
+        self.rev += 1
+
+    # ---- drafts ----
+
+    def _adopt_old_draft(self):
+        """The one new-dashboard conversation of earlier versions becomes a draft like any other."""
+        old = self._path(OLD_DRAFT)
+        try:
+            messages = json.loads(old.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        try:
+            if isinstance(messages, list) and messages:
+                os.replace(old, self._path(new_draft_key()))
+            else:
+                old.unlink()
+        except OSError:
+            pass
+
+    @staticmethod
+    def _describe(key, messages):
+        """What the sidebar shows of a draft, or None for a conversation with nothing in it."""
+        # Read with care: the file may be from an earlier version, and a bad one must not break the sidebar.
+        messages = [m for m in messages if isinstance(m, dict)] if isinstance(messages, list) else []
+        if not messages:
+            return None
+        roles = [m.get("role") for m in messages]
+        said = next((str(m.get("text") or "") for m in messages if m.get("role") == "user"), "")
+        plans = [i for i, m in enumerate(messages) if m.get("role") == "plan" and isinstance(m.get("plan"), dict)]
+        name = messages[plans[-1]]["plan"].get("name") if plans else None
+        return {"key": key, "title": str(name or " ".join(said.split())[:60] or "New dashboard"),
+                "database": next((m["database"] for m in messages if m.get("database")), None),
+                "plan": bool(plans) and "user" not in roles[plans[-1]:]}   # True when a plan is there to be built
+
+    def drafts(self):
+        """The conversations that are not a dashboard yet, the latest first. They stay until the user removes them."""
+        found = {}
+        try:
+            files = [p for p in config.THREADS_DIR.glob(f"{DRAFT}*.json") if _DRAFT_KEY.match(p.stem)]
+        except OSError:
+            files = []
+        for path in files:
+            try:
+                info = path.stat()
+            except OSError:
+                continue
+            stamp = (info.st_mtime_ns, info.st_size)
+            if self._described.get(path.stem, (None, None))[0] != stamp:
+                self._described[path.stem] = (stamp, self._describe(path.stem, self.thread(path.stem)))
+            if self._described[path.stem][1]:
+                found[path.stem] = info.st_mtime
+        for key in set(self._described) - {p.stem for p in files}:
+            del self._described[key]
+        out = []
+        for key in sorted(found, key=found.get, reverse=True):
+            entry = config.database(self._described[key][1]["database"]) if self._described[key][1]["database"] else None
+            out.append({**self._described[key][1], "database_name": entry["name"] if entry else ""})
+        return out
+
+    def remove_draft(self, key):
+        """Take a draft out of the sidebar. Its conversation moves to data/trash, to be put back by hand if wanted."""
+        with self._lock:
+            if not _DRAFT_KEY.match(str(key or "")) or not self._path(key).is_file():
+                return "That draft is no longer there."
+            if self.busy() and self.job.key == key:
+                return "Stop Claude first."
+            target = config.DATA_DIR / "trash" / f"{key}-{datetime.now():%Y%m%d-%H%M%S}.json"
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(self._path(key), target)
+            except OSError:
+                return "The draft could not be moved just now. Try again."
+            self.rev += 1
+        return None
+
+    def _plan(self, plan_id, draft=None):
+        """(draft key, its messages, the plan) for a plan's id; the plan is None when it is not there."""
+        keys = [draft] if _DRAFT_KEY.match(str(draft or "")) else [d["key"] for d in self.drafts()]
+        for key in keys:
+            messages = self.thread(key)
+            found = next((m for m in messages if m["role"] == "plan" and m["id"] == plan_id), None)
+            if found is not None:
+                return key, messages, found
+        return None, [], None
+
     # ---- what the page calls ----
 
     def state(self):
@@ -268,7 +371,8 @@ class Assistant:
             return None, f'The table list of "{entry["name"]}" has not been read yet. Read it in Settings first.'
         return entry["id"], None
 
-    def ask(self, mode, slug, text, database=None):
+    def ask(self, mode, slug, text, database=None, draft=None):
+        """Start a run. For a new dashboard, `draft` is its conversation; without one a new draft begins."""
         text = (text or "").strip()
         if not text:
             return "Type what you want first."
@@ -278,12 +382,17 @@ class Assistant:
             if self.busy() or self._closing:
                 return "Claude is still working on the last request."
             if mode == "new":
+                key = draft if _DRAFT_KEY.match(str(draft or "")) else new_draft_key()
+                earlier = self.thread(key)
+                # A draft stays on the database it began on, while that one is still in Settings.
+                began_on = next((m["database"] for m in earlier if m.get("database")), None)
+                if began_on and config.database(began_on):
+                    database = began_on
                 database, problem = self._chosen(database)
                 if problem:
                     return problem
-                earlier = self.thread(NEW)
-                self._add(NEW, "user", text)
-                job = self._job("plan", NEW, None, "plan", LOOK_TOOLS, database)
+                self._add(key, "user", text, **({"database": database} if database else {}))
+                job = self._job("plan", key, None, "plan", LOOK_TOOLS, database)
                 req = self._request(job, plan_prompt(text, earlier, database), plan_policy(), config.STUDIO_PLAN_TIMEOUT)
             elif mode == "edit" and (spec := specs.load(slug)) is not None:
                 database = spec["database"]
@@ -296,12 +405,11 @@ class Assistant:
             self._start(job, req, {})
         return None
 
-    def build(self, plan_id):
+    def build(self, plan_id, draft=None):
         with self._lock:
             if self.busy() or self._closing:
                 return "Claude is still working on the last request."
-            messages = self.thread(NEW)
-            found = next((m for m in messages if m["role"] == "plan" and m["id"] == plan_id), None)
+            key, messages, found = self._plan(plan_id, draft)
             if found is None:
                 return "That plan is no longer there. Ask again."
             database = found.get("database")
@@ -310,9 +418,9 @@ class Assistant:
             plan = dict(found["plan"])
             slug = plan["slug"] = self._free_slug(plan["slug"])
             request = next((m["text"] for m in reversed(messages) if m["role"] == "user"), plan["name"])
-            job = self._job("build", NEW, slug, slug, ALL_TOOLS, database)
+            job = self._job("build", key, slug, slug, ALL_TOOLS, database)
             req = self._request(job, build_prompt(slug, plan, request, database), write_policy(slug), config.STUDIO_BUILD_TIMEOUT)
-            self._add(NEW, "info", f"Building “{plan['name']}”.")
+            self._add(key, "info", f"Building “{plan['name']}”.")
             self._start(job, req, {"plan": plan})
         return None
 
@@ -322,7 +430,9 @@ class Assistant:
             job.cancel.set()
 
     def clear(self, key):
-        """Forget a conversation. The dashboard's files are not touched."""
+        """Forget a dashboard's conversation. Its files are not touched. A draft is removed instead."""
+        if _DRAFT_KEY.match(str(key or "")):
+            return self.remove_draft(key)
         with self._lock:
             if self.busy() and self.job.key == key:
                 return "Stop Claude first."
@@ -406,12 +516,12 @@ class Assistant:
         if job.kind == "plan":
             plan, clean = extract_plan(text)
             if plan is None:
-                self._add(NEW, "claude", clean or text, meta=meta)
-                self._add(NEW, "error", "Claude's reply had no usable plan. Ask again, perhaps with more detail.")
+                self._add(job.key, "claude", clean or text, meta=meta)
+                self._add(job.key, "error", "Claude's reply had no usable plan. Ask again, perhaps with more detail.")
             else:
                 entry = config.database(job.database) if job.database else None
                 where = {"database": entry["id"], "database_name": entry["name"]} if entry else {}
-                self._add(NEW, "plan", clean, plan=plan, meta=meta, **where)
+                self._add(job.key, "plan", clean, plan=plan, meta=meta, **where)
             return "done"
         if job.kind == "edit":
             # A dashboard stays on the database it was made for, whatever the edit did to the file.
@@ -421,15 +531,15 @@ class Assistant:
             self._add(job.key, "claude", text.strip(), meta=meta)
             return "done"
         if specs.load(job.slug) is None:
-            self._add(NEW, "error", "Claude finished, but the dashboard's dashboard.json is missing.", meta=meta)
+            self._add(job.key, "error", "Claude finished, but the dashboard's dashboard.json is missing.", meta=meta)
             return "failed"
         specs.assign(job.slug, job.database)
-        # The planning conversation becomes the new dashboard's conversation.
-        moved = self.thread(NEW) + [{"id": secrets.token_hex(6), "role": "claude", "text": text.strip(),
+        # The draft's conversation becomes the new dashboard's conversation.
+        moved = self.thread(job.key) + [{"id": secrets.token_hex(6), "role": "claude", "text": text.strip(),
                                      "at": datetime.now().isoformat(timespec="seconds"), "meta": meta}]
         for message in moved:
             if message["role"] == "plan":
                 message["built"] = True
         self._save(job.slug, self.thread(job.slug) + moved)
-        self._save(NEW, [])
+        self._forget(job.key)
         return "done"

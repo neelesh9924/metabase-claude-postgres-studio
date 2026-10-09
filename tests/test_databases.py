@@ -9,7 +9,7 @@ from fake_metabase import DATABASE, KEY, FakeMetabase
 from support import StudioCase, canned_result, database, read_json, serve
 
 from app import config, db, mcp, metabase, schema, specs
-from app.assistant import ALL_TOOLS, NEW, Job, build_prompt, edit_prompt, plan_prompt
+from app.assistant import ALL_TOOLS, Job, build_prompt, edit_prompt, plan_prompt
 
 SQL = "select 7 as n"
 CARD = {"key": "n", "name": "N", "display": "scalar", "row": 0, "col": 0, "size_x": 6, "size_y": 3}
@@ -187,12 +187,12 @@ class ClaudeTest(TwoDatabases):
         self.assertIn("no longer in Settings", self.assistant.ask("new", None, "Leads per day", "archive"))
         self.databases(*config.DATABASES, database("empty", "Empty"))
         self.assertIn('table list of "Empty" has not been read', self.assistant.ask("new", None, "Leads per day", "empty"))
-        self.assertEqual(self.assistant.thread(NEW), [])
+        self.assertEqual(self.assistant.drafts(), [])
 
         self.assertIsNone(self.assistant.ask("new", None, "Leads per day", "sales"))
         self.assertEqual(self.assistant.job.database, "sales")
         self.settle()
-        plan = self.assistant.thread(NEW)[-1]
+        plan = self.assistant.thread(self.assistant.job.key)[-1]
         self.assertEqual((plan["role"], plan["database"], plan["database_name"]), ("plan", "sales", "Sales"))
 
         self.mode("build")
@@ -222,7 +222,7 @@ class ClaudeTest(TwoDatabases):
         self.assertIsNone(self.assistant.ask("new", None, "Orders per day"))
         self.assertEqual(self.assistant.job.database, "main")
         self.settle()
-        plan = self.assistant.thread(NEW)[-1]
+        plan = self.assistant.thread(self.assistant.job.key)[-1]
         self.assertEqual(plan["database_name"], "Warehouse")
         # A plan made for a database that has since been removed is not built.
         self.databases(database("sales", "Sales"))

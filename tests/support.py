@@ -52,7 +52,7 @@ class StudioCase(unittest.TestCase):
         self.queries = []
         self.ran_on = []   # the database each of those queries was sent to
 
-        def run(sql, limit=None, allow_heavy=False, source="cli", database=None):
+        def run(sql, limit=None, allow_heavy=False, source="cli", database=None, reveal=()):
             self.queries.append((source, sql.strip()))
             self.ran_on.append(database)
             return canned_result(sql)

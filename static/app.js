@@ -24,6 +24,9 @@
   const state = {
     slug: null, spec: null, cards: {}, view: {}, gen: 0, chain: Promise.resolve(), offline: false,
     page: "dashboards", setup: null, databases: [], newDb: null, picked: {}, listsAsked: new Set(),
+    // A new dashboard's conversation is a draft. draft is the open one's key; null on the New dashboard screen means not begun.
+    // listed is the open draft once the server's list has had it.
+    draft: null, drafts: [], listed: null,
     mode: "edit", assist: { rev: -1, key: null, job: null, messages: [], followed: undefined, flash: "", again: false },
   };
   const elements = new Map();
@@ -496,18 +499,35 @@
     const result = entry.result || (waiting ? entry.stale : null);
     const view = state.view[key] || "chart";
     const isScalar = card.display === "scalar";
-    const hidden = result ? result.columns.filter((c) => c.pii).map((c) => c.name) : [];
+    // Hidden values: personal data the user may choose to show, and secrets that are never shown.
+    const columns = result ? result.columns : [];
+    const personal = columns.filter((c) => c.pii && c.sensitive === "personal").map((c) => c.name);
+    const secret = columns.filter((c) => c.pii && c.sensitive !== "personal").map((c) => c.name);
+    const revealed = columns.filter((c) => c.revealed).map((c) => c.name);
+    const flags = [
+      personal.length
+        ? h("button", { class: "flag", type: "button", title: `Hidden: ${personal.join(", ")}. Press to choose whether to show the values.`,
+            onclick: () => askShow(card, personal) }, "Personal data hidden · Show")
+        : null,
+      revealed.length
+        ? h("button", { class: "flag shown", type: "button", title: `Shown because you said so: ${revealed.join(", ")}. Press to hide the values again.`,
+            onclick: () => setShown(card, revealed, false) }, "Personal data shown · Hide")
+        : null,
+      secret.length
+        ? h("span", { class: "flag", title: `Hidden: ${secret.join(", ")}. Passwords, codes and tokens are never shown. Leave these columns out.` }, "Secret hidden")
+        : null,
+    ];
 
-    if (!isScalar || view !== "chart" || !result) {
+    if (!isScalar || view !== "chart" || !result || flags.some(Boolean)) {
       el.append(
         h(
           "header",
           { class: "card-head" },
           h("h2", { class: "card-title", title: card.name }, card.name),
-          hidden.length ? h("span", { class: "flag", title: `Hidden: ${hidden.join(", ")}. Leave these columns out.` }, "Personal data hidden") : null,
           result ? h("span", { class: "card-meta" }, metaText(result)) : null
         )
       );
+      if (flags.some(Boolean)) el.append(h("div", { class: "card-flags" }, flags));
     }
     el.append(
       h(
@@ -799,15 +819,19 @@
 
   // ---------- Ask Claude ----------
 
-  const NEW = "_new";
   const DISPLAY_WORDS = {
     scalar: "number", smartscalar: "number with trend", line: "line chart", bar: "bar chart", area: "area chart",
     combo: "bars and line", row: "ranking", pie: "pie", table: "table",
   };
   const WORKING = { plan: "Claude is planning", build: "Claude is building", edit: "Claude is working" };
 
+  // The conversation in the panel: the open draft on the New dashboard screen, else the open dashboard's.
   function assistKey() {
-    return state.mode === "new" ? NEW : state.slug;
+    return state.mode === "new" ? state.draft : state.slug;
+  }
+
+  function openDraft() {
+    return state.mode === "new" && state.draft ? state.drafts.find((d) => d.key === state.draft) : null;
   }
 
   function busy() {
@@ -846,13 +870,14 @@
       section("Will read", plan.reads, (r) =>
         h("li", null, r.table, h("span", null, `${r.size ? ` (${r.size})` : ""}${r.filter ? ` · ${r.filter}` : ""}`))),
       section("Assumed", plan.assumptions, (text) => h("li", null, text)),
+      section("Personal data", plan.sensitive, (text) => h("li", null, text, h("span", null, " · hidden until you choose to show it"))),
       section("Left out", plan.left_out, (text) => h("li", null, text)),
       h(
         "div",
         { class: "plan-foot" },
         h("span", { class: "assist-hint" }, note),
         latest && !message.built && !busy()
-          ? h("button", { class: "btn primary small", type: "button", onclick: () => act("/api/build", { plan: message.id }) }, icon("check", 14), "Build this dashboard")
+          ? h("button", { class: "btn primary small", type: "button", onclick: () => act("/api/build", { plan: message.id, draft: state.draft }) }, icon("check", 14), "Build this dashboard")
           : null
       )
     );
@@ -928,15 +953,20 @@
     if (!choosing) return;
     const ready = state.databases.filter((d) => d.ready);
     if (!ready.some((d) => d.id === state.newDb)) state.newDb = ready.length ? ready[0].id : null;
+    // A draft stays on the database it began on.
+    const draft = openDraft();
+    const kept = draft && state.databases.some((d) => d.id === draft.database) ? draft.database : null;
+    const value = kept || state.newDb;
     const select = $("askDbSelect");
     // Drawn again only when something changed, so an open list is not closed under the user's hand.
-    const shown = JSON.stringify([state.databases, state.newDb]);
+    const shown = JSON.stringify([state.databases, value]);
     if (select.dataset.shown !== shown) {
       select.dataset.shown = shown;
       select.replaceChildren(...state.databases.map((d) =>
-        h("option", { value: d.id, selected: d.id === state.newDb, disabled: !d.ready }, d.ready ? d.name : `${d.name} (read its table list in Settings first)`)));
+        h("option", { value: d.id, selected: d.id === value, disabled: !d.ready }, d.ready ? d.name : `${d.name} (read its table list in Settings first)`)));
     }
-    select.disabled = busy();
+    select.disabled = busy() || !!kept;
+    select.title = kept ? "This draft was begun on this database." : "";
   }
 
   function renderComposer() {
@@ -953,8 +983,13 @@
     $("askHint").textContent = state.assist.flash || hint;
     const planFirst = "Claude shows a plan first. Nothing is read from the database until you press Build.";
     $("assistContext").textContent = state.mode === "new" ? planFirst : state.spec ? `Changing: ${state.spec.name}` : "";
-    $("newDash").setAttribute("aria-current", String(state.mode === "new"));
+    const draft = openDraft();
+    if (state.mode === "new") document.querySelector(".assist-title").textContent = draft ? draft.title : "New dashboard";
+    $("newDash").setAttribute("aria-current", String(state.mode === "new" && !state.draft));
     $("assistClear").hidden = !state.assist.messages.length || (running && job.key === assistKey());
+    const clearing = state.mode === "new" ? "Remove this draft" : "Forget this conversation. The dashboard itself is not changed.";
+    $("assistClear").title = clearing;
+    $("assistClear").setAttribute("aria-label", clearing);
   }
 
   async function updateAssist(assistant) {
@@ -965,6 +1000,7 @@
     // A finished build opens its dashboard, once.
     if (job && job.kind === "build" && job.status === "done" && job.slug && a.followed !== job.id) {
       a.followed = job.id;
+      state.draft = null;
       if (state.page === "new") showPage("dashboards");
       state.mode = "edit";
       history.replaceState(null, "", `#${encodeURIComponent(job.slug)}`);
@@ -998,6 +1034,36 @@
   let polling = false;
   let timer = 0;
 
+  // After a reload: back to the draft, or the New dashboard screen, that was open.
+  function reopen() {
+    const mark = decodeURIComponent(location.hash.slice(1));
+    if (!mark.startsWith("~")) return;
+    const key = mark.slice(1);
+    if (key !== "new" && !state.drafts.some((d) => d.key === key)) return;
+    state.draft = key === "new" ? null : key;
+    showPage("new");
+  }
+
+  function renderDrafts(job) {
+    const drafts = state.drafts;
+    $("draftsLabel").hidden = !drafts.length;
+    $("drafts").hidden = !drafts.length;
+    $("drafts").replaceChildren(...drafts.map((d) => {
+      const working = job && job.status === "running" && job.key === d.key;
+      const stands = working ? (job.kind === "build" ? "Claude is building" : "Claude is planning") : d.plan ? "Plan ready" : "No plan yet";
+      const lead = severalDatabases() && d.database_name ? `${d.database_name} · ` : "";
+      const open = () => {
+        state.draft = d.key;
+        showPage("new");
+        poll();
+      };
+      return h("button", { class: "nav-item", type: "button", "aria-current": String(state.page === "new" && state.draft === d.key), title: d.title, onclick: open },
+        icon("sparkle", 17),
+        h("span", { class: "nav-text" }, h("span", { class: "name" }, d.title), h("span", { class: "sub" }, lead + stands)),
+        h("i", { class: `dot ${d.plan && !working ? "warn" : ""}`, title: stands }));
+    }));
+  }
+
   function showOffline(message) {
     if (state.offline) return;
     state.offline = true;
@@ -1006,7 +1072,8 @@
   }
 
   async function poll() {
-    if (polling) return;
+    // Asked for while one is under way: look again as soon as it ends, since its answer may predate what just happened.
+    if (polling) return void (state.assist.again = true);
     polling = true;
     clearTimeout(timer);
     try {
@@ -1023,7 +1090,18 @@
       const firstLook = !state.setup;
       state.setup = data.setup;
       state.databases = data.databases || [];
+      state.drafts = data.drafts || [];
       if (firstLook && !data.setup.database) showPage("settings");
+      else if (firstLook) reopen();
+      // A draft that was in the list and no longer is has been built or removed. One just begun may not be in it yet:
+      // this answer can have left the server before the first message arrived.
+      if (state.draft && state.drafts.some((d) => d.key === state.draft)) {
+        state.listed = state.draft;
+      } else if (state.draft && state.listed === state.draft) {
+        state.draft = null;
+        if (state.page === "new") history.replaceState(null, "", "#~new");
+      }
+      renderDrafts(data.assistant.job);
       if (state.page === "settings") return void renderList(data.dashboards);
       if (state.page === "new") {
         renderList(data.dashboards);
@@ -1103,7 +1181,11 @@
     if (plan.cards.update) counts.push(`${plan.cards.update} updated`);
     if (plan.cards.trash) counts.push(`${plan.cards.trash} to Metabase’s trash`);
     const blocked = plan.blockers.length > 0;
-    const go = h("button", { class: "btn primary", type: "button", disabled: blocked, onclick: () => publish(slug, plan.name) }, "Go live");
+    // Metabase runs each query as it is written, so personal data hidden here is shown there. The user says yes to that.
+    const sensitive = blocked ? [] : plan.sensitive || [];
+    const agree = sensitive.length ? h("input", { type: "checkbox" }) : null;
+    const go = h("button", { class: "btn primary", type: "button", disabled: blocked || !!agree, onclick: () => publish(slug, plan.name, !!agree) }, "Go live");
+    if (agree) agree.addEventListener("change", () => { go.disabled = !agree.checked; });
     showLive(
       h("h2", null, `Go live: ${plan.name}`),
       where
@@ -1122,14 +1204,19 @@
         : null,
       liveList("Fix this first", plan.blockers, "stop"),
       liveList("Before you confirm", plan.warnings, "warn"),
+      agree
+        ? h("div", { class: "live-box warn" }, h("strong", null, "This dashboard shows personal data"),
+            h("ul", null, sensitive.map((s) => h("li", null, `“${s.card}”: ${s.columns.join(", ")}`))),
+            h("label", { class: "check" }, agree, "Everyone who can open this dashboard in Metabase will see these values. Publish it with them."))
+        : null,
       blocked ? null : h("p", { class: "live-soft" }, "No query runs now. Metabase runs the cards when someone opens the dashboard."),
       liveFooter(closeButton("Cancel"), go)
     );
   }
 
-  async function publish(slug, name) {
+  async function publish(slug, name, sensitiveOk) {
     showLive(h("h2", null, `Go live: ${name}`), h("p", { class: "live-soft" }, "Publishing to Metabase…"));
-    const reply = await post("/api/golive", { slug });
+    const reply = await post("/api/golive", { slug, sensitive_ok: !!sensitiveOk });
     await poll();
     if (!reply.published) {
       return showLive(h("h2", null, `Go live: ${name}`), liveList("Go live did not finish", [reply.error || "Unknown error."], "stop"),
@@ -1204,6 +1291,64 @@
 
   $("removeDash").addEventListener("click", askRemove);
 
+  // ---------- personal data ----------
+
+  async function setShown(card, columns, show) {
+    const slug = state.slug;
+    const reply = await post("/api/show", { slug, key: card.key, columns, show });
+    if (!reply.error && state.slug === slug) await loadDashboard(slug);
+    return reply;
+  }
+
+  // Hidden personal data is shown only on the user's own word, given here.
+  function askShow(card, columns) {
+    const title = h("h2", null, "Show personal data?");
+    const boxes = columns.map((name) => h("input", { type: "checkbox", checked: true, value: name }));
+    const show = h("button", { class: "btn primary", type: "button" }, "Show values");
+    show.addEventListener("click", async () => {
+      const picked = boxes.filter((box) => box.checked).map((box) => box.value);
+      if (!picked.length) return void $("liveDialog").close();
+      show.disabled = true;
+      const reply = await setShown(card, picked, true);
+      if (reply.error) return showLive(title, liveList("Nothing was changed", [reply.error], "stop"), liveFooter(closeButton("Close")));
+      $("liveDialog").close();
+    });
+    showLive(
+      title,
+      h("p", null, `“${card.name}” has ${columns.length === 1 ? "a column that looks" : "columns that look"} like personal data. The values stay hidden unless you say otherwise.`),
+      boxes.map((box) => h("label", { class: "check" }, box, box.value)),
+      liveList("If you show them", [
+        "They appear in this card, and stay shown until you hide them again.",
+        "The card's query runs once more.",
+        "Claude still gets *** in their place, so the values are not sent to it.",
+      ], "warn"),
+      liveFooter(closeButton("Keep hidden"), show)
+    );
+    $("liveDialog").showModal();
+  }
+
+  // ---------- drafts ----------
+
+  function askRemoveDraft() {
+    const draft = openDraft();
+    if (!draft) return;
+    const title = h("h2", null, `Remove the draft “${draft.title}”?`);
+    const remove = h("button", { class: "btn danger", type: "button" }, "Remove");
+    remove.addEventListener("click", async () => {
+      remove.disabled = true;
+      const reply = await post("/api/draft/remove", { key: draft.key });
+      if (reply.error) return showLive(title, liveList("It was not removed", [reply.error], "stop"), liveFooter(closeButton("Close")));
+      $("liveDialog").close();
+      poll();
+    });
+    showLive(
+      title,
+      h("p", null, "It leaves the sidebar. Its conversation moves to the trash folder inside data, so it can be put back by hand."),
+      liveFooter(closeButton("Cancel"), remove)
+    );
+    $("liveDialog").showModal();
+  }
+
   // ---------- settings and theme ----------
 
   function themeChanged() {
@@ -1238,6 +1383,7 @@
     const onNew = page === "new";
     // A new dashboard has its own screen: the conversation fills the page until the dashboard exists.
     state.mode = onNew ? "new" : "edit";
+    if (onNew) history.replaceState(null, "", `#~${state.draft || "new"}`);
     $("app").classList.toggle("on-new", onNew);
     document.querySelector(".assist-title").textContent = onNew ? "New dashboard" : "Ask Claude";
     if (onNew) document.title = "New dashboard · Metabase Claude Studio";
@@ -1289,9 +1435,20 @@
     event.preventDefault();
     const text = $("askText").value.trim();
     if (!text || busy()) return;
+    const fresh = state.mode === "new" && !state.draft;
     const database = state.mode === "new" && severalDatabases() ? state.newDb : undefined;
-    const reply = await act("/api/ask", { mode: state.mode, slug: state.slug, text, database });
-    if (reply.ok) $("askText").value = "";
+    if (fresh) {
+      // The first message begins a draft, which the sidebar lists from now on.
+      const bytes = crypto.getRandomValues(new Uint8Array(6));
+      state.draft = `draft-${[...bytes].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
+    }
+    const reply = await act("/api/ask", { mode: state.mode, slug: state.slug, text, database, draft: state.mode === "new" ? state.draft : undefined });
+    if (reply.ok) {
+      $("askText").value = "";
+      if (state.mode === "new") history.replaceState(null, "", `#~${state.draft}`);
+    } else if (fresh) {
+      state.draft = null;
+    }
   });
   $("askText").addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
@@ -1312,8 +1469,9 @@
     state.newDb = localStorage.getItem("new-db");
   } catch {}
   $("stopBtn").addEventListener("click", () => act("/api/stop", {}));
-  $("assistClear").addEventListener("click", () => act("/api/clear", { key: assistKey() }));
+  $("assistClear").addEventListener("click", () => (state.mode === "new" ? askRemoveDraft() : act("/api/clear", { key: assistKey() })));
   $("newDash").addEventListener("click", () => {
+    state.draft = null;
     showPage("new");
     poll();
     $("askText").focus();

@@ -52,6 +52,13 @@ with the filter it will use. Nothing is read from the database until you press "
 this dashboard". When it is built, the dashboard opens with the Ask Claude panel beside
 it for changes.
 
+**Drafts.** From your first message the conversation is a draft, listed in the sidebar.
+It is kept until you build it or remove it yourself, across reloads and restarts, and
+you can have several. Building a draft turns it into the dashboard, with the
+conversation attached.
+
+![Two drafts in the sidebar, one being planned](docs/img/drafts.png)
+
 ![Claude's plan, waiting for the Build button](docs/img/plan.png)
 
 **A change.** Open a dashboard and type the change. Changes run directly.
@@ -74,6 +81,14 @@ studio's, so that a date filter means the same days in both.
 
 ![A dashboard with a date filter and a status filter](docs/img/filters.png)
 
+**Personal data.** Columns that look like personal data (phone, email, national id) come
+back hidden as `***`. Ask for such a column and Claude includes it; the card then offers
+"Show", which asks you before the values appear, and "Hide" takes them back. Go live
+lists the personal data a dashboard would publish and waits for your tick. Passwords,
+one-time codes, tokens, PINs and API keys are never shown and never published.
+
+![The question before personal data is shown](docs/img/personal-data.png)
+
 While Claude works the panel lists each step, and Stop ends it at once. Each card has
 Table, SQL and Refresh tools (move the mouse over the card).
 
@@ -94,8 +109,13 @@ move to `data/trash/`, from where they can be put back by hand. Metabase is not 
   at a time, however many databases are set up.
 - A query the planner rates as heavy is not run until you press "Run anyway". Claude
   cannot override that.
-- Values in columns that look like personal data (phone, email, tokens and so on) are
-  hidden, and such a card cannot be published.
+- Values in columns that look like personal data are hidden, and shown only on your own
+  word, card by card. Claude gets `***` in their place either way, and has no way to
+  give that word itself. Columns are told by their name, so a personal column with an
+  unrelated name is not caught. Values you chose to show are kept in the local result
+  cache like any other result, and dropped from it when you hide them again.
+- Secrets (passwords, one-time codes, tokens, PINs, API keys) are never shown, and a
+  card that has one cannot be published.
 - Nothing runs on its own. The database is queried only when a card with a new query is
   shown, when you press Refresh, or when Claude tests a query for a request you made.
   Results are kept on disk, so reopening the app costs no query.
@@ -194,7 +214,8 @@ in `.claude/skills/` describe the work, and the commands above stand in for the 
 ```
 python -m unittest discover -s tests -t tests    the tests: no database, no Claude, no Metabase
 python dev/demo_server.py                        the app with stand-ins for all three
-                                                 (DEMO_TWO=1 gives it two databases)
+                                                 (DEMO_TWO=1 gives it two databases,
+                                                  DEMO_PERSONAL=1 a card with phone numbers)
 ```
 
 No build step and one dependency (`psycopg2`). The page is plain HTML, CSS and

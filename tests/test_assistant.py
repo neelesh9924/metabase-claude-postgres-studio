@@ -4,7 +4,7 @@ import unittest
 from support import StudioCase, pid_alive, read_json, serve
 
 from app import db, specs
-from app.assistant import NEW, extract_plan, plan_policy, write_policy
+from app.assistant import extract_plan, plan_policy, write_policy
 
 
 class AssistantTest(StudioCase):
@@ -15,13 +15,18 @@ class AssistantTest(StudioCase):
     def settle(self):
         self.wait(lambda: not self.assistant.busy())
 
+    def draft(self):
+        """The conversation of the request that ran last."""
+        return self.assistant.thread(self.assistant.job.key)
+
     def test_plan_then_build_then_change(self):
         # 1. A new dashboard starts with a plan, and planning cannot query.
         self.mode("plan")
         self.assertIsNone(self.assistant.ask("new", None, "Tickets per day"))
         self.assertEqual(self.assistant.ask("new", None, "again"), "Claude is still working on the last request.")
         self.settle()
-        thread = self.assistant.thread(NEW)
+        key = self.assistant.job.key
+        thread = self.assistant.thread(key)
         self.assertEqual([m["role"] for m in thread], ["user", "plan"])
         plan = thread[1]["plan"]
         self.assertEqual(plan["slug"], "daily_ops")
@@ -43,7 +48,7 @@ class AssistantTest(StudioCase):
         card = specs.load("daily_ops")["cards"][0]
         self.assertEqual(db.cache_get(card["sql"])["rows"], [[7]])
         # The planning conversation moved to the dashboard.
-        self.assertEqual(self.assistant.thread(NEW), [])
+        self.assertEqual((self.assistant.thread(key), self.assistant.drafts()), ([], []))
         moved = self.assistant.thread("daily_ops")
         self.assertEqual([m["role"] for m in moved], ["user", "plan", "info", "claude"])
         self.assertTrue(moved[1]["built"])
@@ -61,13 +66,13 @@ class AssistantTest(StudioCase):
         self.assistant.ask("new", None, "Tickets per day")
         self.settle()
         self.mode("build")
-        self.assistant.build(self.assistant.thread(NEW)[1]["id"])
+        self.assistant.build(self.draft()[1]["id"])
         self.settle()
         self.mode("plan")
         self.assistant.ask("new", None, "The same again")
         self.settle()
         self.mode("build")
-        self.assistant.build(self.assistant.thread(NEW)[-1]["id"])
+        self.assistant.build(self.draft()[-1]["id"])
         self.settle()
         self.assertEqual(specs.slugs(), ["daily_ops", "daily_ops_2"])
 
@@ -82,7 +87,7 @@ class AssistantTest(StudioCase):
         self.assistant.stop()
         self.settle()
         self.assertEqual(self.assistant.job.status, "cancelled")
-        self.assertEqual(self.assistant.thread(NEW)[-1]["role"], "info")
+        self.assertEqual(self.draft()[-1]["role"], "info")
         self.assertFalse(pid_alive(pids["parent"]))
         self.assertFalse(pid_alive(pids["child"]))
 
@@ -90,15 +95,16 @@ class AssistantTest(StudioCase):
         self.mode("edit")
         self.assistant.ask("new", None, "Something")
         self.settle()
-        self.assertEqual([m["role"] for m in self.assistant.thread(NEW)], ["user", "claude", "error"])
+        self.assertEqual([m["role"] for m in self.draft()], ["user", "claude", "error"])
         self.assertEqual(self.assistant.build("nope"), "That plan is no longer there. Ask again.")
 
     def test_clear_forgets_the_conversation_only(self):
         self.mode("edit")
         self.assistant.ask("new", None, "Something")
         self.settle()
-        self.assertIsNone(self.assistant.clear(NEW))
-        self.assertEqual(self.assistant.thread(NEW), [])
+        key = self.assistant.job.key
+        self.assertIsNone(self.assistant.clear(key))
+        self.assertEqual((self.assistant.thread(key), self.assistant.drafts()), ([], []))
 
 
 class PolicyTest(unittest.TestCase):

@@ -48,6 +48,7 @@ def remove(slug):
     target = config.DATA_DIR / "trash" / f"{slug}-{datetime.now():%Y%m%d-%H%M%S}"
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(config.DASHBOARDS_DIR / slug), str(target))
+    _shown_file(slug).unlink(missing_ok=True)
     return target
 
 
@@ -69,7 +70,7 @@ def version(slug):
     """Changes whenever any file of the dashboard changes."""
     folder = config.DASHBOARDS_DIR / slug
     stamp = hashlib.sha256()
-    for path in sorted(folder.iterdir()):
+    for path in sorted(folder.iterdir()) + [_shown_file(slug)]:
         if path.is_file():
             info = path.stat()
             stamp.update(f"{path.name}:{info.st_mtime_ns}:{info.st_size};".encode())
@@ -93,6 +94,36 @@ def published(slug):
     except (OSError, ValueError):
         return {}
     return state if isinstance(state, dict) else {}
+
+
+def _shown_file(slug):
+    # Kept in data/, where Claude can neither read nor write: showing personal data is the user's say alone.
+    return config.DATA_DIR / "shown" / f"{slug}.json"
+
+
+def shown(slug):
+    """The personal-data columns the user said to show, per card: {card key: [column names]}."""
+    try:
+        raw = json.loads(_shown_file(slug).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(key): [str(c) for c in columns] for key, columns in raw.items() if isinstance(columns, list)}
+
+
+def show(slug, key, columns, on):
+    """Record the user's say on some columns of one card: show their values, or hide them again."""
+    state = shown(slug)
+    now = set(state.get(key, []))
+    now = now | set(columns) if on else now - set(columns)
+    state[key] = sorted(now)
+    state = {card: listed for card, listed in state.items() if listed}
+    path = _shown_file(slug)
+    if not state:
+        return path.unlink(missing_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
 
 
 def _filters(raw, folder, problems):
@@ -223,6 +254,7 @@ def load(slug):
         return out
 
     seen = set()
+    allowed = shown(slug)
     for index, card in enumerate(cards):
         if not isinstance(card, dict):
             problems.append(f"Card {index + 1} must be an object.")
@@ -250,6 +282,7 @@ def load(slug):
             "text": card.get("text") or "",
             "filters": {str(k): str(v) for k, v in card["filters"].items()} if isinstance(card.get("filters"), dict) else {},
             "tags": [],
+            "shown": allowed.get(key, []),
         }
         if item["row"] < 0 or item["col"] < 0 or item["col"] + item["size_x"] > GRID_COLUMNS:
             problems.append(f"Card '{key}' does not fit the {GRID_COLUMNS}-column grid.")
