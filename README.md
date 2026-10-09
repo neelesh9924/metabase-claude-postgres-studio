@@ -44,9 +44,11 @@ window onto the same app.
 
 ## Use
 
-**A new dashboard.** Press "New dashboard" and describe it in the Ask Claude panel.
-Claude first answers with a plan: the cards, and the tables it will read with the filter
-it will use. Nothing is read from the database until you press "Build this dashboard".
+**A new dashboard.** Press "New dashboard". It opens its own screen: describe the
+dashboard there. Claude first answers with a plan: the cards, and the tables it will read
+with the filter it will use. Nothing is read from the database until you press "Build
+this dashboard". When it is built, the dashboard opens with the Ask Claude panel beside
+it for changes.
 
 ![Claude's plan, waiting for the Build button](docs/img/plan.png)
 

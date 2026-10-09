@@ -874,8 +874,8 @@
   function emptyHint() {
     const fresh = state.mode === "new";
     const ideas = fresh
-      ? ["Tickets and revenue today against yesterday, and the last 30 days", "Top 10 operators by trips this month", "Lead events per day and the most common ones"]
-      : ["Stack the daily chart by channel", "Add a table of the top 10 operators", "Put the numbers in one row"];
+      ? ["Orders and revenue today against yesterday, and the last 30 days", "Top 10 customers by orders this month", "Sign-ups per day, with a date filter"]
+      : ["Stack the daily chart by channel", "Add a table of the top 10 customers", "Add a date filter"];
     return h(
       "div",
       { class: "assist-empty" },
@@ -922,7 +922,8 @@
     let hint = state.mode === "new" ? "Plan first. Nothing is read until you press Build." : "Changes run directly.";
     if (running) hint = job.key === assistKey() ? "Claude is working." : "Claude is working on another request.";
     $("askHint").textContent = state.assist.flash || hint;
-    $("assistContext").textContent = state.mode === "new" ? "New dashboard" : state.spec ? `Changing: ${state.spec.name}` : "";
+    const planFirst = "Claude shows a plan first. Nothing is read from the database until you press Build.";
+    $("assistContext").textContent = state.mode === "new" ? planFirst : state.spec ? `Changing: ${state.spec.name}` : "";
     $("newDash").setAttribute("aria-current", String(state.mode === "new"));
     $("assistClear").hidden = !state.assist.messages.length || (running && job.key === assistKey());
   }
@@ -935,6 +936,7 @@
     // A finished build opens its dashboard, once.
     if (job && job.kind === "build" && job.status === "done" && job.slug && a.followed !== job.id) {
       a.followed = job.id;
+      if (state.page === "new") showPage("dashboards");
       state.mode = "edit";
       history.replaceState(null, "", `#${encodeURIComponent(job.slug)}`);
       a.again = true;
@@ -993,21 +995,26 @@
       state.setup = data.setup;
       if (firstLook && !data.setup.database) showPage("settings");
       if (state.page === "settings") return void renderList(data.dashboards);
+      if (state.page === "new") {
+        renderList(data.dashboards);
+        return void (await updateAssist(data.assistant));
+      }
       const slugs = data.dashboards.map((d) => d.slug);
       const wanted = decodeURIComponent(location.hash.slice(1));
       const slug = slugs.includes(wanted) ? wanted : slugs.includes(state.slug) ? state.slug : slugs[0] || null;
       if (!slug) {
         state.slug = null;
         state.spec = null;
-        state.mode = "new";
-        showAssist(true);
+        $("app").classList.add("no-dashboards");
         renderList([]);
         $("top").hidden = true;
         $("desc").hidden = true;
+        $("filters").hidden = true;
         $("grid").replaceChildren();
         renderNotice("", []);
         $("empty").hidden = false;
       } else {
+        $("app").classList.remove("no-dashboards");
         const current = data.dashboards.find((d) => d.slug === slug);
         if (slug !== state.slug || !state.spec || current.version !== state.spec.version) await loadDashboard(slug);
         renderList(data.dashboards);
@@ -1198,6 +1205,12 @@
   function showPage(page) {
     state.page = page;
     const onSettings = page === "settings";
+    const onNew = page === "new";
+    // A new dashboard has its own screen: the conversation fills the page until the dashboard exists.
+    state.mode = onNew ? "new" : "edit";
+    $("app").classList.toggle("on-new", onNew);
+    document.querySelector(".assist-title").textContent = onNew ? "New dashboard" : "Ask Claude";
+    if (onNew) document.title = "New dashboard · Metabase Claude Studio";
     $("settingsPage").hidden = !onSettings;
     $("dashPage").hidden = onSettings;
     $("app").classList.toggle("on-settings", onSettings);
@@ -1205,6 +1218,7 @@
     // Coming back, the dashboard is drawn afresh: its cards were hidden and may have changed size.
     state.slug = null;
     state.spec = null;
+    renderComposer();
     if (!onSettings) return;
     $("top").hidden = false;
     $("title").textContent = state.setup && !state.setup.database ? "Set up" : "Settings";
@@ -1260,9 +1274,7 @@
   $("stopBtn").addEventListener("click", () => act("/api/stop", {}));
   $("assistClear").addEventListener("click", () => act("/api/clear", { key: assistKey() }));
   $("newDash").addEventListener("click", () => {
-    if (state.page !== "dashboards") showPage("dashboards");
-    state.mode = "new";
-    showAssist(true);
+    showPage("new");
     poll();
     $("askText").focus();
   });

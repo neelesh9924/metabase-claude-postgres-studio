@@ -273,6 +273,28 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .composer-foot { display: flex; align-items: center; gap: 8px; }
 .assist-hint { flex: 1; min-width: 0; font-size: 12px; color: var(--text-3); }
 
+/* The New dashboard screen: the same conversation, as the whole page. */
+.app.no-dashboards { grid-template-columns: var(--sidebar-w) minmax(0, 1fr); }
+.app.no-dashboards .assist { display: none; }
+.app.on-new { grid-template-columns: var(--sidebar-w) minmax(0, 1fr); }
+.app.on-new .main { display: none; }
+.app.on-new .assist { display: flex !important; align-items: center; border-left: 0; background: var(--bg); }
+.app.on-new .assist > * { width: min(800px, 100%); }
+.app.on-new .assist-head { min-height: 0; padding: 32px 20px 10px; border-bottom: 0; align-items: flex-start; }
+.app.on-new .assist-mark { width: 42px; height: 42px; border-radius: 12px; }
+.app.on-new .assist-title { font-size: 22px; letter-spacing: -.018em; }
+.app.on-new .assist-context { margin-top: 2px; font-size: 14px; color: var(--text-2); white-space: normal; }
+.app.on-new #hideAssist { display: none; }
+.app.on-new .assist-thread { padding: 16px 20px; }
+.app.on-new .msg, .app.on-new .assist-empty { font-size: 14.5px; }
+.app.on-new .assist-empty b { font-size: 17px; }
+.app.on-new .suggests { grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 8px; }
+.app.on-new .suggest-label { grid-column: 1 / -1; }
+.app.on-new .suggest { height: 100%; padding: 12px 14px; background: var(--surface); box-shadow: var(--shadow-1); }
+.app.on-new .plan-card { padding: 18px; }
+.app.on-new .assist-form { padding: 8px 20px 32px; border-top: 0; }
+.app.on-new .composer textarea { min-height: 76px; font-size: 15px; }
+
 /* ───────────── settings ───────────── */
 .settings { display: grid; gap: 16px; max-width: 860px; }
 .done { display: flex; align-items: center; gap: 16px; padding: 14px 16px; border-radius: var(--radius); background: var(--accent-soft); }
