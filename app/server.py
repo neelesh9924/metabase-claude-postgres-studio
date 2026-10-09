@@ -38,9 +38,16 @@ def _same(a, b):
     return bool(a) and hmac.compare_digest(a.encode(), b.encode())
 
 
+def databases_state():
+    """The databases as the page lists them. A new dashboard can be made on the ready ones."""
+    return [{"id": e["id"], "name": e["name"],
+             "ready": config.database_complete(e) and schema.summary(e["id"]) is not None} for e in config.DATABASES]
+
+
 def setup_state():
+    tables = next((t for t in (schema.summary(e["id"]) for e in config.DATABASES) if t), None)
     return {"database": settings.database_ready(), "metabase": settings.metabase_ready(),
-            "claude": bool(config.claude_bin()), "tables": schema.summary()}
+            "claude": bool(config.claude_bin()), "tables": tables}
 
 
 class Studio:
@@ -146,7 +153,7 @@ class Handler(BaseHTTPRequestHandler):
             for dashboard in found:
                 dashboard["metabase"] = metabase.remembered(dashboard["slug"])
             return self._json({"dashboards": found, "assistant": self.studio.assistant.state(),
-                               "setup": setup_state(), "app": config.APP_NAME})
+                               "setup": setup_state(), "databases": databases_state(), "app": config.APP_NAME})
         if url.path == "/api/live":
             # Asks Metabase whether a published dashboard is still there. Metabase only, never the database.
             slug = query.get("slug", [""])[0]
@@ -170,12 +177,12 @@ class Handler(BaseHTTPRequestHandler):
                     card["filter_error"] = str(exc)
                     continue
                 # The page tells a changed card by this: the query as it runs for the filters picked.
-                card["sql_hash"] = db.sql_hash(runs)
-                spec["data"][card["key"]] = db.cache_get(runs)
+                card["sql_hash"] = db.sql_hash(runs, spec["database"])
+                spec["data"][card["key"]] = db.cache_get(runs, spec["database"])
             spec["options"] = {}
             for entry in spec["filters"]:
                 listing = specs.options_query(spec, entry["key"])
-                found = db.cache_get(listing) if listing else None
+                found = db.cache_get(listing, spec["database"]) if listing else None
                 spec["options"][entry["key"]] = [row[0] for row in found["rows"]] if found else None
             spec["limits"] = {"plan_cost": config.MAX_PLAN_COST, "rows": config.PREVIEW_ROW_LIMIT}
             spec["metabase"] = metabase.remembered(spec["slug"])
@@ -212,7 +219,7 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/settings"):
             return self._settings(path, body)
         if path == "/api/ask":
-            error = assistant.ask(body.get("mode"), body.get("slug"), body.get("text"))
+            error = assistant.ask(body.get("mode"), body.get("slug"), body.get("text"), body.get("database"))
         elif path == "/api/build":
             error = assistant.build(body.get("plan"))
         elif path == "/api/stop":
@@ -231,13 +238,13 @@ class Handler(BaseHTTPRequestHandler):
         source = f"preview {spec['slug']}/{card['key']}"
         try:
             runs = specs.query(card, spec, body.get("values"))
-            result = db.run(runs, allow_heavy=bool(body.get("allow_heavy")), source=source)
+            result = db.run(runs, allow_heavy=bool(body.get("allow_heavy")), source=source, database=spec["database"])
         except db.Heavy as exc:
             return self._json({"heavy": {"cost": exc.cost, "limit": config.MAX_PLAN_COST}})
         except (db.QueryError, guard.Rejected, filters.FilterError) as exc:
             return self._json({"error": str(exc)})
-        db.cache_put(runs, result)
-        return self._json({"result": result, "sql_hash": db.sql_hash(runs)})
+        db.cache_put(runs, result, spec["database"])
+        return self._json({"result": result, "sql_hash": db.sql_hash(runs, spec["database"])})
 
     def _options(self, body):
         """The choices of one filter, from the query its dashboard names for them."""
@@ -246,10 +253,11 @@ class Handler(BaseHTTPRequestHandler):
         if not listing:
             return self._json({"error": "This filter has no list."})
         try:
-            result = db.run(listing, limit=1000, source=f"preview {spec['slug']}/list:{body.get('key')}")
+            result = db.run(listing, limit=1000, source=f"preview {spec['slug']}/list:{body.get('key')}",
+                            database=spec["database"])
         except (db.QueryError, guard.Rejected, db.Heavy) as exc:
             return self._json({"error": str(exc)})
-        db.cache_put(listing, result)
+        db.cache_put(listing, result, spec["database"])
         return self._json({"options": [row[0] for row in result["rows"]]})
 
     def _remove(self, body):
@@ -305,10 +313,20 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/settings/tables":
             # Reads the catalog only: table and column names, never a table's rows.
             try:
-                found = schema.snapshot()
+                found = schema.snapshot(str(body.get("database") or "") or None)
             except db.QueryError as exc:
                 return self._json({"error": str(exc)})
-            return self._json({"tables": len(found["tables"])})
+            return self._json({"tables": len(found["tables"]), "settings": settings.public(), "setup": setup_state()})
+        if path == "/api/settings/database":
+            problems, ident = settings.save_database(values)
+            if problems:
+                return self._json({"problems": problems})
+            return self._json({"ok": True, "id": ident, "settings": settings.public(), "setup": setup_state()})
+        if path == "/api/settings/database/remove":
+            problems = settings.remove_database(str(body.get("database") or ""))
+            if problems:
+                return self._json({"problems": problems})
+            return self._json({"ok": True, "settings": settings.public(), "setup": setup_state()})
         if path == "/api/settings":
             problems = settings.save(values)
             return self._json({"problems": problems} if problems else {"ok": True, "settings": settings.public(), "setup": setup_state()})

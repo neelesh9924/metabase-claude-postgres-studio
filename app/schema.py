@@ -1,7 +1,7 @@
-"""Local snapshot of the database structure, read from the Postgres catalog only.
+"""Local snapshot of each database's structure, read from the Postgres catalog only.
 
 Tables in `public` are known by their bare name, tables in any other schema as
-`schema.table`.
+`schema.table`. Every database in Settings has its own snapshot file.
 """
 import json
 import re
@@ -57,9 +57,23 @@ def _known_as(schema, table):
     return table if schema == "public" else f"{schema}.{table}"
 
 
-def snapshot():
-    schemas = list(config.DB_SCHEMAS)
-    tables, columns, indexes, fks = db.fetch_catalog([(q, (schemas,)) for q in (_TABLES, _COLUMNS, _INDEXES, _FOREIGN_KEYS)])
+def _file(database=None):
+    """Where a database's snapshot is kept. Raises SchemaMissing for a database that is not in Settings."""
+    entry = config.database(database)
+    if entry is None and database:
+        raise SchemaMissing(f'There is no database "{database}" in Settings.')
+    ident = entry["id"] if entry else config.MAIN
+    return config.SCHEMA_FILE if ident == config.MAIN else config.SCHEMA_FILE.with_name(f"schema-{ident}.json")
+
+
+def snapshot(database=None):
+    source = config.database(database)
+    if source is None:
+        raise db.QueryError(f'There is no database "{database}" in Settings.' if database
+                            else "No database is set up yet. Open Settings and add one.")
+    schemas = list(source["schemas"])
+    tables, columns, indexes, fks = db.fetch_catalog(
+        [(q, (schemas,)) for q in (_TABLES, _COLUMNS, _INDEXES, _FOREIGN_KEYS)], database=source["id"])
     out = {}
     for schema, name, kind, rows, size, comment in tables:
         out[_known_as(schema, name)] = {
@@ -93,29 +107,45 @@ def snapshot():
             })
     data = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "database": f"{config.DB_HOST}/{config.DB_NAME}",
+        "database": f"{source['host']}/{source['dbname']}",
         "schemas": schemas,
         "tables": out,
     }
-    config.SCHEMA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    config.SCHEMA_FILE.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    path = _file(source["id"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=1), encoding="utf-8")
     return data
 
 
-def load():
+def forget(database):
+    """Drop a removed database's snapshot."""
+    path = config.SCHEMA_FILE.with_name(f"schema-{database}.json")
+    if database and database != config.MAIN:
+        path.unlink(missing_ok=True)
+
+
+def load(database=None):
     try:
-        return json.loads(config.SCHEMA_FILE.read_text(encoding="utf-8"))
+        return json.loads(_file(database).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         raise SchemaMissing("The table list has not been read yet. Read it from Settings, or run: python studio.py snapshot") from None
 
 
-def summary():
+_summaries = {}  # snapshot file -> (its size and time, its summary)
+
+
+def summary(database=None):
     """How many tables the snapshot holds and when it was taken, or None."""
     try:
-        data = load()
-    except SchemaMissing:
+        path = _file(database)
+        info = path.stat()
+        stamp = (info.st_mtime_ns, info.st_size)
+        if _summaries.get(path, (None, None))[0] != stamp:
+            data = load(database)
+            _summaries[path] = (stamp, {"tables": len(data["tables"]), "generated_at": data["generated_at"]})
+    except (SchemaMissing, OSError, KeyError, TypeError):
         return None
-    return {"tables": len(data["tables"]), "generated_at": data["generated_at"]}
+    return _summaries[path][1]
 
 
 def _size(n):
@@ -129,8 +159,8 @@ def _rows(n):
     return "rows unknown" if n is None else f"~{n:,} rows"
 
 
-def list_tables(pattern=""):
-    tables = load()["tables"]
+def list_tables(pattern="", database=None):
+    tables = load(database)["tables"]
     names = [n for n in tables if pattern.lower() in n.lower()]
     if not names:
         return f"No table matches '{pattern}'."
@@ -151,8 +181,8 @@ def _leading_column(definition):
     return first.split()[0].strip('"') if first and "(" not in first else None
 
 
-def describe(name):
-    data = load()
+def describe(name, database=None):
+    data = load(database)
     tables = data["tables"]
     table = tables.get(name)
     if table is None:

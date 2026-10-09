@@ -1,4 +1,4 @@
-"""Read-only access to the business database, one query at a time.
+"""Read-only access to the databases set up in Settings, one query at a time across all of them.
 
 Every statement runs as a subquery of a row-capped SELECT inside a read-only
 transaction, so a write cannot run even if the guard misses it. Nothing here
@@ -26,7 +26,7 @@ _DATE_OIDS = {1082}
 _DATETIME_OIDS = {1114, 1184}
 
 _lock = threading.Lock()
-_conn = None
+_conns = {}       # database id -> connection
 _last_used = 0.0
 
 
@@ -42,9 +42,18 @@ class Heavy(Exception):
         self.cost = cost
 
 
-def _connect():
-    if not (config.DB_HOST and config.DB_NAME and config.DB_USER and config.DB_PASS):
-        raise QueryError("The database is not set up yet. Open Settings and fill in the Database section.")
+def _settings(database):
+    entry = config.database(database)
+    if entry is None:
+        if database:
+            raise QueryError(f'There is no database "{database}" in Settings.')
+        raise QueryError("No database is set up yet. Open Settings and add one.")
+    if not config.database_complete(entry):
+        raise QueryError(f'The database "{entry["name"]}" is not fully set up. Open Settings.')
+    return entry
+
+
+def _connect(entry):
     options = " ".join(
         [
             "-c default_transaction_read_only=on",
@@ -54,12 +63,12 @@ def _connect():
         ]
     )
     conn = psycopg2.connect(
-        host=config.DB_HOST,
-        port=config.DB_PORT,
-        dbname=config.DB_NAME,
-        user=config.DB_USER,
-        password=config.DB_PASS,
-        sslmode=config.DB_SSLMODE,
+        host=entry["host"],
+        port=entry["port"],
+        dbname=entry["dbname"],
+        user=entry["user"],
+        password=entry["password"],
+        sslmode=entry["sslmode"],
         connect_timeout=10,
         application_name=config.APP_ID,
         options=options,
@@ -68,18 +77,29 @@ def _connect():
     return conn
 
 
-def close():
-    global _conn
-    if _conn is not None:
+def _connection(entry):
+    conn = _conns.get(entry["id"])
+    if conn is None or conn.closed:
+        conn = _conns[entry["id"]] = _connect(entry)
+    return conn
+
+
+def _drop(ident):
+    conn = _conns.pop(ident, None)
+    if conn is not None:
         try:
-            _conn.close()
+            conn.close()
         except psycopg2.Error:
             pass
-        _conn = None
+
+
+def close():
+    for ident in list(_conns):
+        _drop(ident)
 
 
 def reset():
-    """Drop the connection once no query is using it, so the next one connects afresh."""
+    """Drop every connection once no query is using one, so the next query connects afresh."""
     with _lock:
         close()
 
@@ -87,16 +107,16 @@ def reset():
 atexit.register(close)
 
 
-def _end_transaction():
-    if _conn is None:
+def _end_transaction(ident):
+    conn = _conns.get(ident)
+    if conn is None:
         return
-    if _conn.closed:
-        close()
-        return
+    if conn.closed:
+        return _drop(ident)
     try:
-        _conn.rollback()
+        conn.rollback()
     except psycopg2.Error:
-        close()
+        _drop(ident)
 
 
 def _message(exc):
@@ -181,22 +201,22 @@ def _log(source, status, sql, ms=None, rows=None, cost=None):
         pass
 
 
-def run(sql, limit=None, allow_heavy=False, source="cli"):
-    """Run one SELECT and return its columns and rows.
+def run(sql, limit=None, allow_heavy=False, source="cli", database=None):
+    """Run one SELECT on one database and return its columns and rows.
 
     Raises guard.Rejected, Heavy or QueryError.
     """
-    global _conn, _last_used
+    global _last_used
     clean = guard.check(sql)
+    entry = _settings(database)
+    where = source if entry["id"] == config.MAIN else f"{source} on {entry['id']}"
     limit = int(limit or config.PREVIEW_ROW_LIMIT)
     # The newlines keep a trailing "-- comment" from swallowing the closing bracket.
     wrapped = f"SELECT * FROM (\n{clean}\n) AS _q LIMIT {limit + 1}"
     cost = None
     with _lock:
         try:
-            if _conn is None or _conn.closed:
-                _conn = _connect()
-            with _conn.cursor() as cur:
+            with _connection(entry).cursor() as cur:
                 cur.execute("EXPLAIN (FORMAT JSON) " + wrapped)
                 plan = cur.fetchone()[0]
                 if isinstance(plan, str):
@@ -210,17 +230,17 @@ def run(sql, limit=None, allow_heavy=False, source="cli"):
                 ms = int((time.perf_counter() - started) * 1000)
                 description = cur.description
         except Heavy:
-            _log(source, "refused: heavy", clean, cost=cost)
+            _log(where, "refused: heavy", clean, cost=cost)
             raise
         except psycopg2.Error as exc:
             message = _message(exc)
-            _log(source, "failed: " + message.splitlines()[0][:80], clean, cost=cost)
+            _log(where, "failed: " + message.splitlines()[0][:80], clean, cost=cost)
             raise QueryError(message) from None
         finally:
-            _end_transaction()
+            _end_transaction(entry["id"])
             _last_used = time.time()
     columns, rows, truncated = _shape(description, raw, limit)
-    _log(source, "ok", clean, ms=ms, rows=len(rows), cost=cost)
+    _log(where, "ok", clean, ms=ms, rows=len(rows), cost=cost)
     return {
         "columns": columns,
         "rows": rows,
@@ -232,24 +252,23 @@ def run(sql, limit=None, allow_heavy=False, source="cli"):
     }
 
 
-def fetch_catalog(statements):
-    """Run fixed catalog queries for the schema snapshot. Not for user SQL."""
-    global _conn, _last_used
+def fetch_catalog(statements, database=None):
+    """Run fixed catalog queries for the table list. Not for user SQL."""
+    global _last_used
+    entry = _settings(database)
     results = []
     with _lock:
         try:
-            if _conn is None or _conn.closed:
-                _conn = _connect()
-            with _conn.cursor() as cur:
+            with _connection(entry).cursor() as cur:
                 for statement, params in statements:
                     cur.execute(statement, params)
                     results.append(cur.fetchall())
         except psycopg2.Error as exc:
             raise QueryError(_message(exc)) from None
         finally:
-            _end_transaction()
+            _end_transaction(entry["id"])
             _last_used = time.time()
-    _log("snapshot", "ok", "catalog only", rows=sum(len(r) for r in results))
+    _log(f"snapshot {entry['id']}", "ok", "catalog only", rows=sum(len(r) for r in results))
     return results
 
 
@@ -257,7 +276,7 @@ _closer_started = False
 
 
 def start_idle_closer():
-    """Close the connection once it has been unused for a while. Sends nothing to the database."""
+    """Close connections once they have been unused for a while. Sends nothing to a database."""
     global _closer_started
     if _closer_started:
         return
@@ -267,25 +286,29 @@ def start_idle_closer():
         while True:
             time.sleep(5)
             with _lock:
-                if _conn is not None and time.time() - _last_used > IDLE_CLOSE_SECONDS:
+                if _conns and time.time() - _last_used > IDLE_CLOSE_SECONDS:
                     close()
 
     threading.Thread(target=loop, daemon=True, name="idle-closer").start()
 
 
-def sql_hash(sql):
-    return hashlib.sha256(sql.strip().encode("utf-8")).hexdigest()[:16]
+def sql_hash(sql, database=None):
+    """Names a query's saved result. The first database keeps the names it had when it was the only one."""
+    entry = config.database(database)
+    ident = entry["id"] if entry else (database or None)
+    text = sql.strip() if ident in (None, config.MAIN) else f"{ident}\n{sql.strip()}"
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
-def cache_get(sql):
-    path = config.CACHE_DIR / f"{sql_hash(sql)}.json"
+def cache_get(sql, database=None):
+    path = config.CACHE_DIR / f"{sql_hash(sql, database)}.json"
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
 
 
-def cache_put(sql, result):
+def cache_put(sql, result, database=None):
     config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    path = config.CACHE_DIR / f"{sql_hash(sql)}.json"
+    path = config.CACHE_DIR / f"{sql_hash(sql, database)}.json"
     path.write_text(json.dumps(result), encoding="utf-8")

@@ -69,14 +69,14 @@ def _range(value):
     raise FilterError(f"'{value}' is not a date range the preview understands.")
 
 
-def column(reference):
-    """Look a 'table.column' up in the table list: (quoted name, type, (schema, table, column))."""
+def column(reference, database=None):
+    """Look a 'table.column' up in a database's table list: (quoted name, type, (schema, table, column))."""
     parts = str(reference or "").split(".")
     if len(parts) not in (2, 3) or not all(parts):
         raise FilterError(f"'{reference}' must be written as table.column.")
     table_name, name = ".".join(parts[:-1]), parts[-1]
     try:
-        tables = schema.load()["tables"]
+        tables = schema.load(database)["tables"]
     except schema.SchemaMissing as exc:
         raise FilterError(str(exc)) from None
     table = tables.get(table_name)
@@ -101,8 +101,8 @@ def _number(value):
     return repr(int(number)) if number == int(number) else repr(number)
 
 
-def _condition(kind, reference, value):
-    name, column_type, _ = column(reference)
+def _condition(kind, reference, value, database):
+    name, column_type, _ = column(reference, database)
     if kind == "date":
         start, end = _range(value)
         if column_type.startswith("timestamp with time zone"):
@@ -125,7 +125,7 @@ def _condition(kind, reference, value):
     return f"{name} in ({', '.join(quote(v) for v in many)})"
 
 
-def render(sql, mapping, definitions, values):
+def render(sql, mapping, definitions, values, database=None):
     """The query as Postgres can run it, for these filter values."""
     kinds = {d["key"]: d["type"] for d in definitions}
 
@@ -137,7 +137,7 @@ def render(sql, mapping, definitions, values):
         value = (values or {}).get(key)
         if value in (None, "", []):
             raise _NoValue
-        return _condition(kinds[key], mapping[key], value)
+        return _condition(kinds[key], mapping[key], value, database)
 
     def optional(text):
         try:

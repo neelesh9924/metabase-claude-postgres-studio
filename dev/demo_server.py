@@ -6,6 +6,7 @@ in-memory Metabase from the tests.
 
 Usage: python dev/demo_server.py [port]        (default 8790)
        DEMO_SETUP=1          start as a new install, on the setup page
+       DEMO_TWO=1            two databases, "Shop" and "Marketing", with a dashboard on each
        DEMO_EMPTY=1          start with no dashboards
        DEMO_NO_COLLECTION=1  make Go live fail the way a missing permission does
 """
@@ -31,6 +32,8 @@ from fake_metabase import DATABASE, KEY, OURS, FakeMetabase  # noqa: E402
 
 TOKEN = "demo"
 TABLES = {"orders": 1840000, "order_items": 5210000, "customers": 96000, "products": 1200}
+MARKETING = "marketing"   # the second database's id, as the studio makes it from the name
+MARKETING_TABLES = {"leads": 420000, "campaigns": 310, "ad_spend": 88000}
 
 
 class DemoRunner(ClaudeRunner):
@@ -45,11 +48,22 @@ def _column(name, kind):
     return {"name": name, "type": kind, "pii": False}
 
 
-def canned(sql, limit=None, allow_heavy=False, source="cli"):
+def canned(sql, limit=None, allow_heavy=False, source="cli", database=None):
     """Made-up rows shaped like the sample dashboard's queries."""
     text = " ".join(sql.split())
     today = date.today()
     days = [today - timedelta(days=n) for n in range(29, -1, -1)]
+    if database == MARKETING:
+        if '"Day"' in text:
+            columns = [_column("Day", "date"), _column("Leads", "number")]
+            rows = [[d.isoformat(), int(140 + 45 * math.sin(d.toordinal() / 3) + 6 * d.weekday())] for d in days]
+        elif '"Campaign"' in text:
+            columns = [_column("Campaign", "text"), _column("Leads", "number")]
+            rows = [["Spring sale", 1210], ["Referral", 940], ["Search ads", 760], ["Newsletter", 430], ["Partners", 215]]
+        else:
+            columns, rows = [_column("Leads today", "number")], [[164]]
+        return {"columns": columns, "rows": rows, "row_count": len(rows), "truncated": False, "ms": 9, "cost": 3.0,
+                "ran_at": datetime.now().isoformat(timespec="seconds")}
     if "from orders" in text:
         return canned_orders(text, today)
     if '"Channel"' in text:
@@ -132,21 +146,44 @@ ORDERS = {
 }
 
 
-def write_orders(folder):
+LEADS = {
+    "dashboard.json": {
+        "name": "Leads",
+        "description": "A made-up marketing database, to show a dashboard on a second database.",
+        "database": MARKETING,
+        "cards": [
+            {"key": "today", "name": "Leads today", "display": "scalar", "row": 0, "col": 0, "size_x": 6, "size_y": 3},
+            {"key": "by_campaign", "name": "Leads by campaign", "display": "row",
+             "viz": {"graph.dimensions": ["Campaign"], "graph.metrics": ["Leads"]}, "row": 0, "col": 6, "size_x": 18, "size_y": 6},
+            {"key": "per_day", "name": "Leads per day", "display": "line",
+             "viz": {"graph.dimensions": ["Day"], "graph.metrics": ["Leads"]}, "row": 6, "col": 0, "size_x": 24, "size_y": 6},
+        ],
+    },
+    "today.sql": 'select count(*) as "Leads today"\nfrom leads\nwhere created_at >= current_date',
+    "by_campaign.sql": 'select c.name as "Campaign", count(*) as "Leads"\nfrom leads l join campaigns c on c.id = l.campaign_id\n'
+                       "where l.created_at >= current_date - 30\ngroup by 1\norder by 2 desc",
+    "per_day.sql": 'select created_at::date as "Day", count(*) as "Leads"\nfrom leads\nwhere created_at >= current_date - 30\ngroup by 1\norder by 1',
+}
+
+
+def write_dashboard(folder, files):
     folder.mkdir(parents=True)
-    for name, content in ORDERS.items():
+    for name, content in files.items():
         (folder / name).write_text(content if isinstance(content, str) else json.dumps(content, indent=2), encoding="utf-8")
 
 
-def canned_tables():
+def canned_tables(database=None):
+    """Stands in for reading the catalog: writes one database's table list."""
     now = datetime.now().isoformat(timespec="seconds")
+    names = MARKETING_TABLES if database == MARKETING else TABLES
     tables = {name: {"schema": "public", "kind": "table", "rows": rows, "size_bytes": rows * 180, "comment": None,
                      "columns": [{"name": "id", "type": "bigint", "nullable": False}, {"name": "created_at", "type": "timestamp with time zone", "nullable": False},
                                  {"name": "status", "type": "text", "nullable": False}, {"name": "amount", "type": "numeric(10,2)", "nullable": False}],
                      "indexes": [{"unique": True, "primary": True, "definition": "btree (id)"}, {"unique": False, "primary": False, "definition": "btree (created_at)"}],
-                     "foreign_keys": []} for name, rows in TABLES.items()}
-    config.SCHEMA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    config.SCHEMA_FILE.write_text(json.dumps({"generated_at": now, "database": "demo", "schemas": ["public"], "tables": tables}), encoding="utf-8")
+                     "foreign_keys": []} for name, rows in names.items()}
+    path = config.SCHEMA_FILE.with_name(f"schema-{database}.json") if database == MARKETING else config.SCHEMA_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"generated_at": now, "database": "demo", "schemas": ["public"], "tables": tables}), encoding="utf-8")
     return {"tables": tables}
 
 
@@ -156,7 +193,9 @@ def main():
     if not os.environ.get("DEMO_EMPTY"):
         shutil.copytree(ROOT / "examples" / "sample", TMP / "dashboards" / "sample")
         if not os.environ.get("DEMO_SETUP"):
-            write_orders(TMP / "dashboards" / "orders")
+            write_dashboard(TMP / "dashboards" / "orders", ORDERS)
+            if os.environ.get("DEMO_TWO"):
+                write_dashboard(TMP / "dashboards" / "leads", LEADS)
     config.ROOT = TMP
     config.DASHBOARDS_DIR = TMP / "dashboards"
     fake = FakeMetabase()
@@ -165,10 +204,15 @@ def main():
     settings.start()
     values = {"port": port, "timezone": "Asia/Kolkata"}
     if not os.environ.get("DEMO_SETUP"):
-        values.update(db_host="db.example.com", db_name="shop", db_user="reader", db_password="demo",
-                      metabase_url=fake.url, metabase_api_key=KEY, metabase_database_id=DATABASE, metabase_collection="Studio dashboards")
-        canned_tables()
+        values.update(metabase_url=fake.url, metabase_api_key=KEY, metabase_collection="Studio dashboards")
     settings.save(values)
+    if not os.environ.get("DEMO_SETUP"):
+        reader = {"host": "db.example.com", "user": "reader", "password": "demo"}
+        settings.save_database({**reader, "name": "Shop", "dbname": "shop", "metabase_database_id": DATABASE})
+        canned_tables()
+        if os.environ.get("DEMO_TWO"):
+            settings.save_database({**reader, "name": "Marketing", "dbname": "marketing", "metabase_database_id": 8})
+            canned_tables(MARKETING)
     db.run = canned
     schema.snapshot = canned_tables
     checks.database = lambda values: {"ok": True, "server": "PostgreSQL 17.2", "user": "reader", "tables": len(TABLES),

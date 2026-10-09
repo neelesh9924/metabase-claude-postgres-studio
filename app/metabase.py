@@ -1,8 +1,8 @@
 """Publish a dashboard to Metabase, and report what the API key can reach.
 
-Writes go to one collection and use one database, both chosen in Settings. A
-dashboard's folder gets its own metabase.json recording what it was
-published as, so the next Go live updates it. Before any write, every recorded id is
+Writes go to one collection, chosen in Settings, and use the Metabase database chosen
+there for the dashboard's own database. A dashboard's folder gets its own metabase.json
+recording what it was published as, so the next Go live updates it. Before any write, every recorded id is
 checked to really sit in that collection, so a wrong record cannot reach other work.
 
 Nothing here runs a query, apart from doctor's two SHOW statements.
@@ -91,11 +91,15 @@ def _collection():
     return found
 
 
-def target():
-    """The one database and the one collection Go live uses. Raises MetabaseError."""
-    database_id = config.METABASE_DATABASE_ID
+def target(database=None):
+    """Where Go live puts a dashboard of this database: its Metabase database and the one collection. Raises MetabaseError."""
+    entry = config.database(database)
+    if entry is None:
+        raise MetabaseError("This dashboard's database is not in Settings." if database
+                            else "No database is set up yet. Open Settings and add one.")
+    database_id = entry["metabase_database_id"]
     if not isinstance(database_id, int):
-        raise MetabaseError("No Metabase database is chosen. Pick one in Settings, under Metabase.")
+        raise MetabaseError(f'No Metabase database is chosen for "{entry["name"]}". Pick one in Settings, under Databases.')
     databases = (_call("GET", "/api/database") or {}).get("data") or []
     database = next((d for d in databases if d.get("id") == database_id), None)
     if database is None:
@@ -103,7 +107,7 @@ def target():
     if database.get("native_permissions") != "write":
         raise MetabaseError(f'The key may not save SQL questions on "{database.get("name")}".')
     collection = _collection()
-    return {"database_id": database_id, "database": database.get("name"),
+    return {"database_id": database_id, "database": database.get("name"), "studio_database": entry["name"],
             "collection_id": collection["id"], "collection": collection.get("name")}
 
 
@@ -213,7 +217,7 @@ def plan(slug):
         blockers.append("The dashboard has no card with a query.")
     for card in cards:
         try:
-            result = db.cache_get(specs.query(card, spec))
+            result = db.cache_get(specs.query(card, spec), spec["database"])
         except filters.FilterError as exc:
             blockers.append(f'"{card["name"]}": {exc}')
             continue
@@ -228,13 +232,13 @@ def plan(slug):
 
     for entry in spec["filters"]:
         listing = specs.options_query(spec, entry["key"])
-        if listing and db.cache_get(listing) is None:
+        if listing and db.cache_get(listing, spec["database"]) is None:
             blockers.append(f'The list for the filter "{entry["name"]}" has not loaded yet. Open the dashboard and let it load.')
     state = specs.published(slug)
     where = None
     live = None
     try:
-        where = target()
+        where = target(spec["database"])
         if spec["filters"]:
             _field_ids(spec, where)
         if any(f["type"] == "date" for f in spec["filters"]):
@@ -276,7 +280,7 @@ def _field_ids(spec, where):
     for card in spec["cards"]:
         for key in card.get("tags") or []:
             try:
-                wanted[(card["key"], key)] = filters.column(card["filters"][key])[2]
+                wanted[(card["key"], key)] = filters.column(card["filters"][key], spec["database"])[2]
             except (KeyError, filters.FilterError) as exc:
                 raise MetabaseError(f'"{card["name"]}", filter "{key}": {exc}') from None
     if not wanted:
@@ -305,7 +309,7 @@ def _parameters(spec):
         if entry["default"] not in (None, ""):
             parameter["default"] = entry["default"] if entry["type"] == "date" else [entry["default"]]
         listing = specs.options_query(spec, entry["key"])
-        found = db.cache_get(listing) if listing else None
+        found = db.cache_get(listing, spec["database"]) if listing else None
         if found:
             # The choices as they were when the dashboard was last drawn here; opening the list in Metabase runs nothing.
             parameter.update({"values_query_type": "list", "values_source_type": "static-list",
@@ -422,6 +426,7 @@ def publish(slug):
             "published_at": datetime.now().isoformat(timespec="seconds"),
             "dashboard_updated_at": (saved or {}).get("updated_at"),
             "content": specs.content_hash(slug),
+            "database_id": where["database_id"],
         })
         _save_state(slug, state)
         _seen[slug] = (time.monotonic(), "live")
@@ -442,19 +447,27 @@ def doctor(with_queries=True):
     root = _call("GET", "/api/collection/root")
     if root.get("can_write"):
         lines.append('Notice: it can write to "Our analytics" itself. The studio never does.')
-    try:
-        where = target()
-    except MetabaseError as exc:
-        lines.append(f"Go live is NOT ready: {exc}")
+    if not config.DATABASES:
+        lines.append("Go live is NOT ready: no database is set up yet.")
         return lines
-    lines.append(f"Go live writes to the collection \"{where['collection']}\" (id {where['collection_id']}).")
-    lines.append(f"Go live uses the database \"{where['database']}\" (id {where['database_id']}).")
-    if with_queries:
-        for statement, expected in (("SHOW statement_timeout", "30s"), ("SHOW default_transaction_read_only", "on")):
-            reply = _call("POST", "/api/dataset", {"database": where["database_id"], "type": "native",
-                                                   "native": {"query": statement}})
-            rows = (reply.get("data") or {}).get("rows") or [[None]]
-            value = rows[0][0]
-            lines.append(f"  {statement}: {value}" + ("" if value == expected else f"   <-- expected {expected}"))
-    lines.append("Go live is ready.")
+    ready = 0
+    for entry in config.DATABASES:
+        try:
+            where = target(entry["id"])
+        except MetabaseError as exc:
+            lines.append(f"Go live is NOT ready for \"{entry['name']}\": {exc}")
+            continue
+        if not ready:
+            lines.append(f"Go live writes to the collection \"{where['collection']}\" (id {where['collection_id']}).")
+        ready += 1
+        lines.append(f"For \"{entry['name']}\", Go live uses the Metabase database \"{where['database']}\" (id {where['database_id']}).")
+        if with_queries:
+            for statement, expected in (("SHOW statement_timeout", "30s"), ("SHOW default_transaction_read_only", "on")):
+                reply = _call("POST", "/api/dataset", {"database": where["database_id"], "type": "native",
+                                                       "native": {"query": statement}})
+                rows = (reply.get("data") or {}).get("rows") or [[None]]
+                value = rows[0][0]
+                lines.append(f"  {statement}: {value}" + ("" if value == expected else f"   <-- expected {expected}"))
+    if ready == len(config.DATABASES):
+        lines.append("Go live is ready.")
     return lines

@@ -14,7 +14,8 @@ Inside the app, use the studio tools `list_tables`, `describe_table`, `run_query
 
 1. Read `dashboards/<slug>/dashboard.json` and the `.sql` files the request touches.
 2. Change only what the request needs. A title, chart type, size or position lives in
-   `dashboard.json` and costs no query. Leave working queries as they are.
+   `dashboard.json` and costs no query. Leave working queries as they are, and leave
+   the `"database"` line as it is: a dashboard stays on its database.
 3. For a new or changed query: `describe_table` first if the table is new to this
    dashboard, write the `.sql` file, then test it with `run_query` on that file. A
    refused query is narrowed, never sent again unchanged.

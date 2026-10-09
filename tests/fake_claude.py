@@ -100,4 +100,9 @@ elif mode == "build":
         encoding="utf-8")
     finish("Built one card. Query said: " + answer["content"][0]["text"].splitlines()[0])
 else:
+    if os.environ.get("FAKE_DROPS_DATABASE"):  # an edit that loses the line saying which database the dashboard is on
+        path = Path(os.environ["FAKE_ROOT"]) / "dashboards" / os.environ["FAKE_DROPS_DATABASE"] / "dashboard.json"
+        spec = json.loads(path.read_text(encoding="utf-8"))
+        spec.pop("database", None)
+        path.write_text(json.dumps(spec), encoding="utf-8")
     finish("Made the chart stacked.")

@@ -5,7 +5,7 @@ import time
 import unittest
 from unittest import mock
 
-from support import StudioCase, pid_alive, read_json
+from support import StudioCase, database, pid_alive, read_json
 
 from app import config
 from app.claude import RunRequest, ToolPolicy
@@ -21,8 +21,8 @@ class RunnerTest(StudioCase):
     def test_command_environment_and_prompt(self):
         leaked = {"CLAUDE_CONFIG_DIR": r"C:\somewhere\.claude-other", "CLAUDECODE": "1",
                   "CLAUDE_CODE_ENTRYPOINT": "x", "ANTHROPIC_API_KEY": "sk-x"}
-        secrets = [mock.patch.object(config, "DB_PASS", "SECRET-MARK-1"), mock.patch.object(config, "METABASE_API_KEY", "SECRET-MARK-2")]
-        with mock.patch.dict(os.environ, leaked), secrets[0], secrets[1]:
+        self.databases(database(password="SECRET-MARK-1"))
+        with mock.patch.dict(os.environ, leaked), mock.patch.object(config, "METABASE_API_KEY", "SECRET-MARK-2"):
             result = self.runner().run(request())
         self.assertEqual(result.outcome, "ok", result.error)
         seen = json.loads(result.text)

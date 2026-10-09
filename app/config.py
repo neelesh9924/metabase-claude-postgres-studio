@@ -25,24 +25,27 @@ THREADS_DIR = DATA_DIR / "threads"
 SESSION_FILE = DATA_DIR / "session.json"
 PROFILE_DIR = DATA_DIR / "browser-profile"
 
+# The first database of an install gets this id. Its table list and cached results keep the
+# plain file names they had when the app knew one database only.
+MAIN = "main"
+DATABASE_FIELDS = {
+    "id": "", "name": "", "host": "", "port": 5432, "dbname": "", "user": "", "password": "",
+    "sslmode": "require", "schemas": ["public"], "metabase_database_id": None,
+}
 DEFAULTS = {
-    "db_host": "", "db_port": 5432, "db_name": "", "db_user": "", "db_password": "", "db_sslmode": "require",
-    "db_schemas": ["public"],
-    "metabase_url": "", "metabase_api_key": "", "metabase_database_id": None,
-    "metabase_collection_id": None, "metabase_collection": "",
+    "databases": [],
+    "metabase_url": "", "metabase_api_key": "", "metabase_collection_id": None, "metabase_collection": "",
     "claude_bin": "", "model": "",
     "timezone": "UTC", "port": 8787, "browser": "",
     "statement_timeout_ms": 30000, "max_plan_cost": 500000, "preview_row_limit": 2000,
     "max_queries": 40, "max_turns": 150, "plan_timeout": 300, "build_timeout": 900,
 }
-SECRETS = ("db_password", "metabase_api_key")
+SECRETS = ("metabase_api_key",)
 
 _NAMES = {
-    "db_host": "DB_HOST", "db_port": "DB_PORT", "db_name": "DB_NAME", "db_user": "DB_USER", "db_password": "DB_PASS",
-    "db_sslmode": "DB_SSLMODE", "db_schemas": "DB_SCHEMAS",
+    "databases": "DATABASES",
     "metabase_url": "METABASE_URL", "metabase_api_key": "METABASE_API_KEY",
-    "metabase_database_id": "METABASE_DATABASE_ID", "metabase_collection_id": "METABASE_COLLECTION_ID",
-    "metabase_collection": "METABASE_COLLECTION",
+    "metabase_collection_id": "METABASE_COLLECTION_ID", "metabase_collection": "METABASE_COLLECTION",
     "claude_bin": "STUDIO_CLAUDE_BIN", "model": "STUDIO_MODEL",
     "timezone": "TIMEZONE", "port": "PORT", "browser": "STUDIO_BROWSER",
     "statement_timeout_ms": "STATEMENT_TIMEOUT_MS", "max_plan_cost": "MAX_PLAN_COST",
@@ -64,9 +67,20 @@ def name_of(key):
 apply(DEFAULTS)
 
 
+def database(ident=None):
+    """One database's settings: the one with this id, or the first when none is named. None if there is none."""
+    if ident in (None, ""):
+        return DATABASES[0] if DATABASES else None  # noqa: F821  (set by apply)
+    return next((d for d in DATABASES if d["id"] == ident), None)  # noqa: F821
+
+
+def database_complete(entry):
+    return bool(entry and entry["host"] and entry["dbname"] and entry["user"] and entry["password"])
+
+
 def claude_bin():
     """Path of the Claude Code program, or None."""
-    if STUDIO_CLAUDE_BIN:  # noqa: F821  (set by apply)
+    if STUDIO_CLAUDE_BIN:  # noqa: F821
         return STUDIO_CLAUDE_BIN if Path(STUDIO_CLAUDE_BIN).is_file() else None  # noqa: F821
     found = shutil.which("claude")
     if found:

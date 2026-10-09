@@ -5,7 +5,7 @@ from unittest import mock
 from urllib.parse import quote
 
 from fake_metabase import DATABASE, KEY, FakeMetabase
-from support import StudioCase, canned_result, serve
+from support import StudioCase, canned_result, database, serve
 
 from app import config, db, filters, guard, mcp, metabase, specs
 from app.assistant import ALL_TOOLS, Job
@@ -193,8 +193,9 @@ class GoLiveFiltersTest(FilterCase):
         self.fake = FakeMetabase()
         self.addCleanup(self.fake.stop)
         metabase._seen.clear()
+        self.databases(database(metabase_id=DATABASE))
         for patch in [mock.patch.object(config, "METABASE_URL", self.fake.url), mock.patch.object(config, "METABASE_API_KEY", KEY),
-                      mock.patch.object(config, "METABASE_DATABASE_ID", DATABASE), mock.patch.object(config, "METABASE_COLLECTION", "Studio dashboards"),
+                      mock.patch.object(config, "METABASE_COLLECTION", "Studio dashboards"),
                       mock.patch.object(config, "METABASE_COLLECTION_ID", None)]:
             patch.start()
             self.addCleanup(patch.stop)

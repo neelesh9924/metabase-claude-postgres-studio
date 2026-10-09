@@ -1,6 +1,7 @@
 """Dashboards on disk: dashboards/<slug>/dashboard.json plus one <key>.sql per card.
 
-Positions use Metabase's grid: 24 columns, rows of equal height.
+Positions use Metabase's grid: 24 columns, rows of equal height. A dashboard belongs to
+one database, named by "database" in its dashboard.json; without it, to the first one.
 """
 import hashlib
 import json
@@ -48,6 +49,20 @@ def remove(slug):
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(config.DASHBOARDS_DIR / slug), str(target))
     return target
+
+
+def assign(slug, database):
+    """Record which database a dashboard belongs to, in its dashboard.json. Does nothing when it already says so."""
+    path = config.DASHBOARDS_DIR / slug / "dashboard.json"
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not database or not isinstance(raw, dict) or raw.get("database") == database:
+        return
+    lead = {key: raw[key] for key in ("name", "description") if key in raw}
+    rest = {key: value for key, value in raw.items() if key not in lead and key != "database"}
+    path.write_text(json.dumps({**lead, "database": database, **rest}, indent=2) + "\n", encoding="utf-8")
 
 
 def version(slug):
@@ -119,7 +134,7 @@ def query(card, spec, values=None):
     """A card's query as it will run for these filter values. Raises filters.FilterError."""
     if not card.get("tags"):
         return card["sql"]
-    return filters.render(card["sql"], card["filters"], spec["filters"], effective(spec, values))
+    return filters.render(card["sql"], card["filters"], spec["filters"], effective(spec, values), spec.get("database"))
 
 
 def options_query(spec, key):
@@ -154,10 +169,13 @@ def load(slug):
     if not _SLUG.match(slug or "") or slug not in slugs():
         return None
     folder = config.DASHBOARDS_DIR / slug
+    first = config.database()
     out = {
         "slug": slug,
         "name": slug,
         "description": "",
+        "database": first["id"] if first else None,
+        "database_name": first["name"] if first else "",
         "version": version(slug),
         "live": False,
         "changed": False,
@@ -189,6 +207,13 @@ def load(slug):
     else:
         problems.append("The dashboard has no 'name'.")
     out["description"] = raw.get("description") or ""
+    if raw.get("database"):
+        named = config.database(str(raw["database"]))
+        out["database"] = str(raw["database"])
+        out["database_name"] = named["name"] if named else out["database"]
+        if named is None:
+            problems.append(f'This dashboard belongs to the database "{out["database"]}", which is not in Settings.')
+    database = out["database"]
     out["filters"] = _filters(raw.get("filters"), folder, problems)
     known = {f["key"] for f in out["filters"]}
 
@@ -241,7 +266,7 @@ def load(slug):
                 sql = (folder / f"{key}.sql").read_text(encoding="utf-8")
                 guard.check(sql)
                 item["sql"] = sql.strip()
-                item["sql_hash"] = db.sql_hash(sql)
+                item["sql_hash"] = db.sql_hash(sql, database)
                 item["tags"] = filters.tags(sql)
                 for tag in item["tags"]:
                     if tag not in known:
@@ -250,7 +275,7 @@ def load(slug):
                         problems.append(f"Card '{key}' uses {{{{{tag}}}}}; add it to the card's \"filters\" with its table.column.")
                     else:
                         try:
-                            filters.column(item["filters"][tag])
+                            filters.column(item["filters"][tag], database)
                         except filters.FilterError as exc:
                             problems.append(f"Card '{key}', filter '{tag}': {exc}")
             except OSError:
@@ -277,6 +302,8 @@ def summary(slug):
     return {
         "slug": slug,
         "name": spec["name"],
+        "database": spec["database"],
+        "database_name": spec["database_name"],
         "cards": len(spec["cards"]),
         "version": spec["version"],
         "live": spec["live"],

@@ -7,7 +7,10 @@
   python studio.py check <slug>      check a dashboard's files, without the database
   python studio.py snapshot          refresh the schema snapshot (catalog only)
   python studio.py doctor            what the Metabase key can reach, and whether Go live is ready
-  python studio.py info              the time zone, schemas and limits in force
+  python studio.py info              the databases, time zone and limits in force
+
+With several databases, tables, describe, q and snapshot take --db <id or name>;
+without it they use the first one (q -f uses the dashboard's own).
 """
 import argparse
 import sys
@@ -18,7 +21,20 @@ from app import config, db, filters, guard, metabase, schema, server, settings, 
 from app.textio import format_result
 
 
+def _database(args):
+    """The id of the database named with --db, by id or by name. None means the first one."""
+    wanted = (getattr(args, "db", None) or "").strip().lower()
+    if not wanted:
+        return None
+    for entry in config.DATABASES:
+        if wanted in (entry["id"].lower(), entry["name"].lower()):
+            return entry["id"]
+    known = ", ".join(f"{e['id']} ({e['name']})" for e in config.DATABASES) or "none yet"
+    raise SystemExit(f"No database '{args.db}'. Databases: {known}")
+
+
 def cmd_q(args):
+    database = _database(args)
     if args.file:
         try:
             sql = open(args.file, encoding="utf-8").read()
@@ -31,15 +47,18 @@ def cmd_q(args):
         print("Give the query in quotes, or a file with -f.")
         return 1
     try:
+        if args.file:
+            # A dashboard's file runs on that dashboard's database, unless --db says otherwise.
+            spec = specs.load(Path(args.file).resolve().parent.name)
+            database = database or (spec or {}).get("database")
         if args.file and filters.tags(sql):
             # A card query with {{filters}}: run it for the dashboard's default values.
-            spec = specs.load(Path(args.file).resolve().parent.name)
             card = next((c for c in (spec or {}).get("cards", []) if c["key"] == Path(args.file).stem), None)
             if card is None:
                 print("This query uses {{filters}}. Add the card and the filters to dashboard.json first.")
                 return 1
-            sql = specs.query(card, spec)
-        result = db.run(sql, limit=args.limit, allow_heavy=args.allow_heavy, source="cli")
+            sql = specs.query(card, {**spec, "database": database})
+        result = db.run(sql, limit=args.limit, allow_heavy=args.allow_heavy, source="cli", database=database)
     except filters.FilterError as exc:
         print(f"Filter problem: {exc}")
         return 1
@@ -71,19 +90,23 @@ def cmd_check(args):
     return 1 if spec["problems"] else 0
 
 
-def cmd_snapshot(_args):
+def cmd_snapshot(args):
+    database = _database(args)
     try:
-        data = schema.snapshot()
+        data = schema.snapshot(database)
     except db.QueryError as exc:
         print(f"Failed: {exc}")
         return 1
-    print(f"Saved {len(data['tables'])} tables to {config.SCHEMA_FILE.relative_to(config.ROOT)}")
+    print(f"Saved {len(data['tables'])} tables of {config.database(database)['name']}.")
     return 0
 
 
 def cmd_info(_args):
-    print(f"Database:   {config.DB_NAME or 'not set up'}" + (f" on {config.DB_HOST}" if config.DB_HOST else ""))
-    print(f"Schemas:    {', '.join(config.DB_SCHEMAS)}")
+    if not config.DATABASES:
+        print("Databases:  none set up yet")
+    for entry in config.DATABASES:
+        print(f"Database:   {entry['name']} (--db {entry['id']}): {entry['dbname']} on {entry['host']}, "
+              f"schemas {', '.join(entry['schemas'])}")
     print(f"Time zone:  {config.TIMEZONE}")
     print(f"Limits:     {config.STATEMENT_TIMEOUT_MS // 1000} s per query, plan cost {config.MAX_PLAN_COST:,.0f}, "
           f"{config.PREVIEW_ROW_LIMIT:,} rows per card")
@@ -120,9 +143,11 @@ def main():
 
     p = sub.add_parser("tables", help="list tables from the local snapshot")
     p.add_argument("text", nargs="?", default="")
+    p.add_argument("--db", help="which database, by id or name (default: the first)")
 
     p = sub.add_parser("describe", help="columns, indexes and links of one table")
     p.add_argument("table")
+    p.add_argument("--db", help="which database, by id or name (default: the first)")
 
     p = sub.add_parser("q", help="run one read-only query")
     p.add_argument("sql", nargs="?")
@@ -130,11 +155,13 @@ def main():
     p.add_argument("--rows", type=int, default=20, help="rows to print (default 20)")
     p.add_argument("--limit", type=int, default=None, help="rows to fetch (default PREVIEW_ROW_LIMIT)")
     p.add_argument("--allow-heavy", action="store_true", help="run even when the plan cost is over the limit")
+    p.add_argument("--db", help="which database, by id or name (default: the first, or the dashboard's own with -f)")
 
     p = sub.add_parser("check", help="check a dashboard's files")
     p.add_argument("slug")
 
-    sub.add_parser("snapshot", help="refresh the schema snapshot")
+    p = sub.add_parser("snapshot", help="refresh the schema snapshot")
+    p.add_argument("--db", help="which database, by id or name (default: the first)")
     sub.add_parser("doctor", help="what the Metabase key can reach")
     sub.add_parser("info", help="the time zone, schemas and limits in force")
 
@@ -146,9 +173,9 @@ def main():
     if args.command == "info":
         return cmd_info(args)
     if args.command == "tables":
-        return _from_snapshot(lambda: schema.list_tables(args.text))
+        return _from_snapshot(lambda: schema.list_tables(args.text, _database(args)))
     if args.command == "describe":
-        return _from_snapshot(lambda: schema.describe(args.table))
+        return _from_snapshot(lambda: schema.describe(args.table, _database(args)))
     if args.command == "q":
         return cmd_q(args)
     if args.command == "check":

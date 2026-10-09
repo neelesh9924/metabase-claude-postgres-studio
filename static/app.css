@@ -92,6 +92,7 @@ p { margin: 0; }
   align-items: center; gap: 12px 16px; flex-wrap: wrap; border-bottom: 1px solid var(--line);
   background: color-mix(in srgb, var(--bg) 84%, transparent); backdrop-filter: saturate(1.4) blur(12px); }
 .titles { flex: 1 1 260px; min-width: 0; display: flex; align-items: center; gap: 12px; }
+#status { display: inline-flex; align-items: center; gap: 6px; }
 .titles h1 { font-size: 20px; font-weight: 600; letter-spacing: -.018em; white-space: nowrap; overflow: hidden;
   text-overflow: ellipsis; }
 .top-actions { flex: none; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -246,6 +247,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   background: var(--surface); box-shadow: var(--shadow-1); }
 .plan-name { font: 600 14.5px var(--display); }
 .plan-desc { font-size: 12.5px; color: var(--text-2); }
+.plan-db { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 12.5px; font-weight: 600; color: var(--text-2); }
 .plan-card h3 { margin-bottom: 4px; font: 600 11.5px var(--font); letter-spacing: .05em; text-transform: uppercase; color: var(--text-3); }
 .plan-card ul { display: grid; gap: 3px; margin: 0; padding-left: 17px; font-size: 13px; }
 .plan-card li span { color: var(--text-3); }
@@ -272,6 +274,8 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .composer textarea::placeholder { color: var(--text-3); }
 .composer-foot { display: flex; align-items: center; gap: 8px; }
 .assist-hint { flex: 1; min-width: 0; font-size: 12px; color: var(--text-3); }
+.ask-db { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 12.5px; font-weight: 600; color: var(--text-2); }
+.ask-db .input { width: auto; min-width: 220px; max-width: 100%; height: 32px; }
 
 /* The New dashboard screen: the same conversation, as the whole page. */
 .app.no-dashboards { grid-template-columns: var(--sidebar-w) minmax(0, 1fr); }
@@ -319,6 +323,13 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .result.warn { background: var(--warn-soft); color: var(--warn-ink); }
 .result.bad { background: var(--bad-soft); color: var(--bad); }
 .form-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.fields > p { grid-column: 1 / -1; }
+.db + .db, .db + .db-row { border-top: 1px solid var(--line); }
+.db-row { display: flex; align-items: center; gap: 12px; padding: 12px 18px; }
+.db-text { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.db-text .field-hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.db .form { padding-top: 4px; }
+.db > .form:first-child { padding-top: 16px; }
 .grow { flex: 1; }
 @media (max-width: 760px) { .fields { grid-template-columns: 1fr; } }
 

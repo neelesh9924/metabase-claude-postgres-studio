@@ -19,7 +19,7 @@ The numbers in these pictures are made up.
 - Python 3.11 or newer.
 - [Claude Code](https://code.claude.com/docs/en/setup), installed and signed in (`claude`
   works in a terminal).
-- A PostgreSQL database. A user that can only read is the safe choice.
+- One or more PostgreSQL databases. A user that can only read is the safe choice.
 - For publishing: Metabase with an API key. Tested on Metabase 0.55.
 
 ## Start
@@ -28,9 +28,11 @@ The numbers in these pictures are made up.
 2. Double-click `Launch Metabase Claude Studio.vbs`. The first start builds `.venv` in a
    console window (once, needs the internet), then opens the app in its own window.
 3. The app opens on its setup page:
-   - **Database:** fill it in, press "Test connection", "Save", then "Read the table list".
-   - **Metabase:** the address and an API key, "Check", then pick the database and the
-     collection for new dashboards. This can wait until you want to go live.
+   - **Databases:** give the first one a name, fill it in, press "Test connection",
+     "Add", then "Read the table list". More can be added later.
+   - **Metabase:** the address and an API key, "Check", then pick the collection for new
+     dashboards and the Metabase database that matches yours. This can wait until you
+     want to go live.
    - **Claude:** it finds Claude Code by itself. "Check the sign-in" sends one short
      request.
 
@@ -53,6 +55,15 @@ it for changes.
 ![Claude's plan, waiting for the Build button](docs/img/plan.png)
 
 **A change.** Open a dashboard and type the change. Changes run directly.
+
+**Several databases.** Add more under Settings > Databases, each with its own
+connection, schemas and table list. With more than one, the New dashboard screen asks
+which database the dashboard is for. A dashboard stays on that database: Claude sees
+and queries only that one, the preview reads only that one, and Go live publishes it on
+the Metabase database you matched to it. A database cannot be removed while a dashboard
+is on it, and one query cannot read two databases.
+
+![Choosing the database for a new dashboard](docs/img/databases.png)
 
 **Filters.** Ask for "a date filter and a status filter" and the dashboard gets a filter
 row: a date range with presets, and dropdowns or text boxes. They filter the preview and
@@ -79,7 +90,8 @@ move to `data/trash/`, from where they can be put back by hand. Metabase is not 
 **The database**
 
 - Every query is checked to be one SELECT, then run as a subquery inside a read-only
-  transaction, one at a time, with a time limit (30 s by default) and a row cap.
+  transaction, with a time limit (30 s by default) and a row cap. Only one query runs
+  at a time, however many databases are set up.
 - A query the planner rates as heavy is not run until you press "Run anyway". Claude
   cannot override that.
 - Values in columns that look like personal data (phone, email, tokens and so on) are
@@ -99,8 +111,9 @@ move to `data/trash/`, from where they can be put back by hand. Metabase is not 
 
 **Metabase**
 
-- Go live writes only into the one collection you chose and uses only the one database
-  you chose. Before any write, every recorded id is checked to sit in that collection.
+- Go live writes only into the one collection you chose, and uses only the Metabase
+  database you matched to the dashboard's own. Before any write, every recorded id is
+  checked to sit in that collection.
 - It runs no query. Metabase runs the cards when someone opens the dashboard there.
 - The API key stays with the local server. The page and Claude never get it.
 
@@ -114,7 +127,7 @@ move to `data/trash/`, from where they can be put back by hand. Metabase is not 
 Not required, but it keeps the key's reach small:
 
 1. Give the studio its own collection and its own group. Let the group curate that
-   collection and write SQL questions on the one database.
+   collection and write SQL questions on the databases you will use.
 2. Create the API key in that group (Admin > Settings > Authentication > API keys).
 3. For the Metabase database connection itself, a read-only database user, and in
    "Additional JDBC connection string options":
@@ -131,7 +144,7 @@ in Settings tells you when a key can reach more than you meant.
 | `data/` | Settings, saved secrets, the table list, conversations, cached results, logs | No |
 | `examples/sample/` | The example dashboard a new install starts with | Yes |
 
-The database password and the Metabase key are stored encrypted for your Windows user
+The database passwords and the Metabase key are stored encrypted for your Windows user
 (DPAPI). The settings file is useless on another PC or to another user. On other
 systems they are stored as they are, in a file only you may read.
 
@@ -141,8 +154,8 @@ To keep your dashboards under version control, run `git init` inside `dashboards
 
 | Setting | Default | Meaning |
 |---|---|---|
-| Schemas | `public` | Which schemas Claude sees |
-| Time zone | `UTC` | The zone "today" and days are counted in |
+| Schemas | `public` | Which schemas Claude sees, for each database |
+| Time zone | `UTC` | The zone "today" and days are counted in, in every database |
 | Query time limit | 30 s | The database stops a query after this long |
 | Heavy-query limit | 500,000 | A query the planner rates above this waits for "Run anyway" |
 | Rows per card | 2,000 | Most rows fetched for one card |
@@ -160,8 +173,10 @@ python studio.py q "<select ...>"  run one read-only query
 python studio.py check <slug>      check a dashboard's files
 python studio.py snapshot          refresh the table list (catalog only)
 python studio.py doctor            what the Metabase key can reach
-python studio.py info              the time zone, schemas and limits in force
+python studio.py info              the databases, time zone and limits in force
 ```
+
+With several databases, `tables`, `describe`, `q` and `snapshot` take `--db <id or name>`.
 
 The same folder works in a Claude Code terminal session: `CLAUDE.md` and the two skills
 in `.claude/skills/` describe the work, and the commands above stand in for the tools.
@@ -169,6 +184,8 @@ in `.claude/skills/` describe the work, and the commands above stand in for the 
 ## Limits of this version
 
 - PostgreSQL only.
+- A dashboard reads one database. A query cannot join two, and a dashboard cannot be
+  moved to another database later.
 - The launcher is for Windows. `python studio.py` may work elsewhere but is untested.
 - Tested against Metabase 0.55 only.
 
@@ -177,6 +194,7 @@ in `.claude/skills/` describe the work, and the commands above stand in for the 
 ```
 python -m unittest discover -s tests -t tests    the tests: no database, no Claude, no Metabase
 python dev/demo_server.py                        the app with stand-ins for all three
+                                                 (DEMO_TWO=1 gives it two databases)
 ```
 
 No build step and one dependency (`psycopg2`). The page is plain HTML, CSS and

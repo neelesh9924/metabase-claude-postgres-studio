@@ -1,8 +1,8 @@
 # Metabase Claude Studio for Postgres
 
-Drafts Metabase dashboards on a PostgreSQL database. A dashboard is a folder of files.
-The app draws it with live data, read through the database user set up in Settings,
-and the user's Go live click publishes it to Metabase.
+Drafts Metabase dashboards on PostgreSQL databases. A dashboard is a folder of files and
+belongs to one database. The app draws it with live data, read through the database
+user set up in Settings, and the user's Go live click publishes it to Metabase.
 
 The user works in one of two ways, and both end in the same files:
 
@@ -15,7 +15,7 @@ The skills `dashboard-build` and `dashboard-edit` hold the order of work for bot
 
 ## Rules
 
-**Treat the database as production.**
+**Treat every database as production.**
 
 - Read it only through `python studio.py q`, or the `run_query` tool inside the app. No
   other client, script or connection.
@@ -60,7 +60,13 @@ this: its planning run has no query tool.
 To change a dashboard, edit its files. Only cards whose SQL changed are queried again;
 a layout or title change costs no query.
 
-`python studio.py info` prints the time zone, the schemas and the limits in force.
+`python studio.py info` prints the databases, the time zone and the limits in force.
+
+**Several databases.** Settings may hold more than one. Inside the app the request names
+the one a dashboard is for, and the tools show and query that one only. In a terminal,
+`tables`, `describe`, `q` and `snapshot` take `--db <id>` (`info` lists the ids); without
+it they use the first database, and `q -f` uses the dashboard's own. One query cannot
+read two databases.
 
 ## Files of a dashboard
 
@@ -70,6 +76,7 @@ a layout or title change costs no query.
 {
   "name": "Daily orders",
   "description": "Orders and revenue, today and the last 30 days.",
+  "database": "main",
   "cards": [
     { "key": "kpis", "display": "heading", "text": "Today", "row": 0, "col": 0, "size_x": 24, "size_y": 1 },
     { "key": "orders_today", "name": "Orders today", "display": "scalar",
@@ -81,6 +88,10 @@ a layout or title change costs no query.
 }
 ```
 
+- `database`: the id of the database the dashboard reads. Write it as the request gives
+  it (in a terminal, `python studio.py info` lists the ids), and never change it on an
+  existing dashboard: the app puts it back. A dashboard without the line is on the first
+  database.
 - `key`: a-z, 0-9, `_`. The card's query is the file `<key>.sql` beside it. Go live
   recognises a card by its key: keep the key when a card changes; a new key means a new
   card in Metabase and the old one in its trash.

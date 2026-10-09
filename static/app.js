@@ -23,7 +23,7 @@
   const $ = (id) => document.getElementById(id);
   const state = {
     slug: null, spec: null, cards: {}, view: {}, gen: 0, chain: Promise.resolve(), offline: false,
-    page: "dashboards", setup: null, picked: {}, listsAsked: new Set(),
+    page: "dashboards", setup: null, databases: [], newDb: null, picked: {}, listsAsked: new Set(),
     mode: "edit", assist: { rev: -1, key: null, job: null, messages: [], followed: undefined, flash: "", again: false },
   };
   const elements = new Map();
@@ -609,6 +609,10 @@
     notice.append(icon("alert", 17), h("div", null, h("strong", null, title), list));
   }
 
+  function severalDatabases() {
+    return state.databases.length > 1;
+  }
+
   // Where a dashboard stands: only here, live in Metabase, or live but no longer matching.
   function statusOf(d) {
     if (!d.live) return { text: "Draft", kind: "" };
@@ -622,7 +626,11 @@
   function renderTop() {
     const spec = state.spec;
     const status = statusOf(spec);
-    $("status").replaceChildren(h("span", { class: `chip ${status.kind}` }, h("i", { class: "dot" }), status.text));
+    const chips = [h("span", { class: `chip ${status.kind}` }, h("i", { class: "dot" }), status.text)];
+    if (severalDatabases() && spec.database_name) {
+      chips.push(h("span", { class: "chip", title: "The database this dashboard reads" }, icon("table", 13), spec.database_name));
+    }
+    $("status").replaceChildren(...chips);
     $("openLive").hidden = !spec.live || spec.metabase === "trashed" || spec.metabase === "gone";
     $("goLive").disabled = false;
   }
@@ -734,13 +742,14 @@
     $("list").replaceChildren(
       ...dashboards.map((d) => {
         const status = statusOf(d);
-        const count = `${d.cards} ${d.cards === 1 ? "card" : "cards"}`;
+        // With several databases, the line under the name says which one; with one, how many cards.
+        const lead = severalDatabases() && d.database_name ? d.database_name : `${d.cards} ${d.cards === 1 ? "card" : "cards"}`;
         const current = state.page === "dashboards" && d.slug === state.slug && state.mode === "edit";
         return h(
           "button",
           { class: "nav-item", type: "button", "aria-current": String(current), title: d.name, onclick: () => select(d.slug) },
           icon("chart", 17),
-          h("span", { class: "nav-text" }, h("span", { class: "name" }, d.name), h("span", { class: "sub" }, `${count} · ${d.problems ? `${d.problems} to fix` : status.text}`)),
+          h("span", { class: "nav-text" }, h("span", { class: "name" }, d.name), h("span", { class: "sub" }, `${lead} · ${d.problems ? `${d.problems} to fix` : status.text}`)),
           h("i", { class: `dot ${status.kind}`, title: status.text })
         );
       })
@@ -830,7 +839,8 @@
     return h(
       "div",
       { class: "plan-card" },
-      h("div", null, h("div", { class: "plan-name" }, plan.name), plan.description ? h("div", { class: "plan-desc" }, plan.description) : null),
+      h("div", null, h("div", { class: "plan-name" }, plan.name), plan.description ? h("div", { class: "plan-desc" }, plan.description) : null,
+        severalDatabases() && message.database_name ? h("div", { class: "plan-db" }, icon("table", 13), `On the database ${message.database_name}`) : null),
       section("Cards", plan.cards, (c) =>
         h("li", null, c.name, h("span", null, ` · ${DISPLAY_WORDS[c.display] || c.display}${c.shows ? ` · ${c.shows}` : ""}`))),
       section("Will read", plan.reads, (r) =>
@@ -911,9 +921,28 @@
     );
   }
 
+  // On the New dashboard screen, with more than one database, the user says which one the dashboard is for.
+  function renderDatabaseChoice() {
+    const choosing = state.mode === "new" && severalDatabases();
+    $("askDb").hidden = !choosing;
+    if (!choosing) return;
+    const ready = state.databases.filter((d) => d.ready);
+    if (!ready.some((d) => d.id === state.newDb)) state.newDb = ready.length ? ready[0].id : null;
+    const select = $("askDbSelect");
+    // Drawn again only when something changed, so an open list is not closed under the user's hand.
+    const shown = JSON.stringify([state.databases, state.newDb]);
+    if (select.dataset.shown !== shown) {
+      select.dataset.shown = shown;
+      select.replaceChildren(...state.databases.map((d) =>
+        h("option", { value: d.id, selected: d.id === state.newDb, disabled: !d.ready }, d.ready ? d.name : `${d.name} (read its table list in Settings first)`)));
+    }
+    select.disabled = busy();
+  }
+
   function renderComposer() {
     const job = state.assist.job;
     const running = busy();
+    renderDatabaseChoice();
     const blocked = running || state.offline || (state.mode === "edit" && !state.slug);
     $("askText").disabled = blocked;
     $("sendBtn").disabled = blocked;
@@ -993,6 +1022,7 @@
       }
       const firstLook = !state.setup;
       state.setup = data.setup;
+      state.databases = data.databases || [];
       if (firstLook && !data.setup.database) showPage("settings");
       if (state.page === "settings") return void renderList(data.dashboards);
       if (state.page === "new") {
@@ -1085,7 +1115,7 @@
             h("dt", null, "Collection"),
             h("dd", null, where.collection),
             h("dt", null, "Database"),
-            h("dd", null, where.database),
+            h("dd", null, where.studio_database && where.studio_database !== where.database ? `${where.studio_database} (in Metabase: ${where.database})` : where.database),
             h("dt", null, "Cards"),
             h("dd", null, counts.join(", ") || "none")
           )
@@ -1259,7 +1289,8 @@
     event.preventDefault();
     const text = $("askText").value.trim();
     if (!text || busy()) return;
-    const reply = await act("/api/ask", { mode: state.mode, slug: state.slug, text });
+    const database = state.mode === "new" && severalDatabases() ? state.newDb : undefined;
+    const reply = await act("/api/ask", { mode: state.mode, slug: state.slug, text, database });
     if (reply.ok) $("askText").value = "";
   });
   $("askText").addEventListener("keydown", (event) => {
@@ -1271,6 +1302,15 @@
   $("askText").addEventListener("input", () => {
     state.assist.flash = "";
   });
+  $("askDbSelect").addEventListener("change", () => {
+    state.newDb = $("askDbSelect").value;
+    try {
+      localStorage.setItem("new-db", state.newDb);
+    } catch {}
+  });
+  try {
+    state.newDb = localStorage.getItem("new-db");
+  } catch {}
   $("stopBtn").addEventListener("click", () => act("/api/stop", {}));
   $("assistClear").addEventListener("click", () => act("/api/clear", { key: assistKey() }));
   $("newDash").addEventListener("click", () => {

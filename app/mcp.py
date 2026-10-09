@@ -1,7 +1,8 @@
 """The studio's tools, offered to Claude as an MCP server over HTTP.
 
 One JSON-RPC message per POST, one JSON reply. Which tools exist depends on the
-running job: a plan may look at the table list but cannot query.
+running job: a plan may look at the table list but cannot query. Every tool works
+on the job's one database, the one its dashboard belongs to.
 """
 from . import config, db, filters, guard, schema, specs
 from .textio import format_result
@@ -10,8 +11,8 @@ FALLBACK_PROTOCOL = "2025-06-18"
 
 TOOLS = {
     "list_tables": {
-        "description": "List the database tables whose name contains the text, with row counts and sizes. "
-                       "Reads a local snapshot, not the database.",
+        "description": "List the tables of this dashboard's database whose name contains the text, with row counts "
+                       "and sizes. Reads a local snapshot, not the database.",
         "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "description": "Part of a table name. Empty lists every table."}}},
     },
     "describe_table": {
@@ -19,7 +20,7 @@ TOOLS = {
         "inputSchema": {"type": "object", "properties": {"table": {"type": "string"}}, "required": ["table"]},
     },
     "run_query": {
-        "description": "Run one read-only SELECT on the production database and return the first rows. "
+        "description": "Run one read-only SELECT on this dashboard's database, which is production, and return the first rows. "
                        "Give either sql, or file: the path of a .sql file inside dashboards/. Prefer file once the "
                        "card's query is written, so the preview reuses the result. A card query that uses {{filters}} "
                        "can only be run by file, after dashboard.json names the filters; it runs with their defaults.",
@@ -40,14 +41,14 @@ class ToolError(Exception):
 
 
 def _list_tables(job, args):
-    return schema.list_tables(str(args.get("text") or ""))
+    return schema.list_tables(str(args.get("text") or ""), job.database)
 
 
 def _describe_table(job, args):
-    return schema.describe(str(args.get("table") or ""))
+    return schema.describe(str(args.get("table") or ""), job.database)
 
 
-def _query_text(args):
+def _query_text(args, job):
     if args.get("file"):
         path = (config.ROOT / str(args["file"])).resolve()
         if not path.is_relative_to(config.DASHBOARDS_DIR.resolve()) or path.suffix != ".sql":
@@ -63,7 +64,7 @@ def _query_text(args):
         if card is None:
             raise ToolError("This query uses {{filters}}. Add the card and the filters to dashboard.json first, then run it by file.")
         try:
-            return specs.query(card, spec)
+            return specs.query(card, {**spec, "database": job.database})
         except filters.FilterError as exc:
             raise ToolError(f"Filter problem: {exc}") from None
     if args.get("sql"):
@@ -74,7 +75,7 @@ def _query_text(args):
 
 
 def _run_query(job, args):
-    sql = _query_text(args)
+    sql = _query_text(args, job)
     try:
         guard.check(sql)
     except guard.Rejected as exc:
@@ -84,7 +85,7 @@ def _run_query(job, args):
                         "Finish with what you have.")
     job.queries += 1
     try:
-        result = db.run(sql, source=f"claude {job.label}")
+        result = db.run(sql, source=f"claude {job.label}", database=job.database)
     except db.Heavy as exc:
         job.note("Query refused as heavy", f"cost {exc.cost:,.0f}")
         raise ToolError(f"Refused: {exc} Narrow it with a shorter date range or a filter on an indexed "
@@ -92,7 +93,7 @@ def _run_query(job, args):
     except (db.QueryError, guard.Rejected) as exc:
         job.note("Query failed", str(exc).splitlines()[0])
         raise ToolError(f"Failed: {exc}") from None
-    db.cache_put(sql, result)
+    db.cache_put(sql, result, job.database)
     count = result["row_count"]
     job.note("Query done", f"{count} {'row' if count == 1 else 'rows'} in {result['ms']} ms")
     try:
@@ -107,9 +108,12 @@ def _check_dashboard(job, args):
     if spec is None:
         return "No such dashboard yet: its dashboard.json is missing."
     head = f"{spec['name']}: {len(spec['cards'])} cards"
-    if not spec["problems"]:
+    problems = list(spec["problems"])
+    if job.database and spec["database"] != job.database:
+        problems.insert(0, f'dashboard.json must say "database": "{job.database}", the database this dashboard is built on.')
+    if not problems:
         return head + ", no problems."
-    return "\n".join([head] + ["problem: " + p for p in spec["problems"]])
+    return "\n".join([head] + ["problem: " + p for p in problems])
 
 
 _RUN = {

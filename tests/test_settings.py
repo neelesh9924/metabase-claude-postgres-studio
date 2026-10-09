@@ -7,54 +7,87 @@ import psycopg2
 from fake_metabase import DATABASE, KEY, OURS, FakeMetabase
 from support import StudioCase, serve
 
-from app import checks, config, settings
+from app import checks, config, secretbox, settings
 
-DB = {"db_host": "db.example.com", "db_name": "shop", "db_user": "reader", "db_password": "s3cret-pw"}
+DB = {"name": "Shop", "host": "db.example.com", "dbname": "shop", "user": "reader", "password": "s3cret-pw"}
 
 
 class SettingsFileTest(StudioCase):
     def test_saved_settings_come_back_and_take_effect(self):
-        self.assertEqual(settings.save({**DB, "timezone": "Europe/Paris", "db_schemas": "public, sales", "port": "9000"}), [])
-        self.assertEqual((config.DB_HOST, config.DB_PASS, config.TIMEZONE, config.PORT), ("db.example.com", "s3cret-pw", "Europe/Paris", 9000))
-        self.assertEqual(config.DB_SCHEMAS, ["public", "sales"])
+        self.assertEqual(settings.save_database({**DB, "schemas": "public, sales"}), ([], "main"))
+        self.assertEqual(settings.save({"timezone": "Europe/Paris", "port": "9000"}), [])
+        first = config.database()
+        self.assertEqual((first["host"], first["password"], first["schemas"]), ("db.example.com", "s3cret-pw", ["public", "sales"]))
+        self.assertEqual((config.TIMEZONE, config.PORT), ("Europe/Paris", 9000))
         settings._current.clear()
         config.apply(config.DEFAULTS)
+        self.assertIsNone(config.database())
         settings.start()
-        self.assertEqual((config.DB_NAME, config.DB_PASS, config.DB_SCHEMAS), ("shop", "s3cret-pw", ["public", "sales"]))
+        first = config.database("main")
+        self.assertEqual((first["name"], first["dbname"], first["password"], first["schemas"]), ("Shop", "shop", "s3cret-pw", ["public", "sales"]))
         self.assertTrue(settings.database_ready())
 
     def test_secrets_are_not_readable_in_the_file_or_sent_to_the_page(self):
-        settings.save({**DB, "metabase_url": "https://mb.example.com/", "metabase_api_key": "mb_secret-key"})
+        settings.save_database(DB)
+        settings.save({"metabase_url": "https://mb.example.com/", "metabase_api_key": "mb_secret-key"})
         stored = config.SETTINGS_FILE.read_text(encoding="utf-8")
         if hasattr(__import__("ctypes"), "WinDLL"):
             self.assertNotIn("s3cret-pw", stored)
             self.assertNotIn("mb_secret-key", stored)
         seen = settings.public()
-        self.assertNotIn("db_password", seen)
         self.assertNotIn("metabase_api_key", seen)
-        self.assertEqual((seen["db_password_set"], seen["metabase_api_key_set"]), (True, True))
+        self.assertNotIn("password", seen["databases"][0])
+        self.assertEqual((seen["databases"][0]["password_set"], seen["metabase_api_key_set"]), (True, True))
         self.assertEqual(seen["metabase_url"], "https://mb.example.com")
         self.assertNotIn("s3cret-pw", json.dumps(seen))
 
     def test_an_empty_secret_keeps_the_saved_one(self):
-        settings.save(DB)
-        settings.save({"db_host": "other.example.com", "db_password": ""})
-        self.assertEqual((config.DB_HOST, config.DB_PASS), ("other.example.com", "s3cret-pw"))
+        settings.save_database(DB)
+        self.assertEqual(settings.save_database({"id": "main", "host": "other.example.com", "password": ""}), ([], "main"))
+        first = config.database()
+        self.assertEqual((first["host"], first["password"], first["name"]), ("other.example.com", "s3cret-pw", "Shop"))
 
     def test_bad_values_are_refused_and_nothing_changes(self):
-        settings.save(DB)
+        settings.save_database(DB)
+        port = config.PORT
         for bad, word in [({"port": "80"}, "Local port"), ({"timezone": "Paris; drop table"}, "time zone"),
-                          ({"metabase_url": "mb.example.com"}, "http"), ({"db_schemas": "public, bad name"}, "schema"),
-                          ({"statement_timeout_ms": "abc"}, "cannot be used"), ({"db_sslmode": "maybe"}, "SSL")]:
+                          ({"metabase_url": "mb.example.com"}, "http"), ({"statement_timeout_ms": "abc"}, "cannot be used")]:
             problems = settings.save(bad)
             self.assertTrue(problems and word in problems[0], (bad, problems))
-        self.assertEqual((config.PORT, config.TIMEZONE, config.METABASE_URL), (config.DEFAULTS["port"], "UTC", ""))
+        self.assertEqual((config.PORT, config.TIMEZONE, config.METABASE_URL), (port, "UTC", ""))
+        for bad, word in [({"schemas": "public, bad name"}, "schema"), ({"sslmode": "maybe"}, "SSL"), ({"port": "x"}, "numbers"),
+                          ({"name": ""}, "name"), ({"host": ""}, "host")]:
+            problems, ident = settings.save_database({"id": "main", **bad})
+            self.assertTrue(problems and word in problems[0] and ident is None, (bad, problems))
+        self.assertEqual(config.database(), {**config.DATABASE_FIELDS, **DB, "id": "main"})
 
     def test_one_remembered_value(self):
-        settings.save(DB)
+        settings.save_database(DB)
         settings.remember("metabase_collection_id", 12)
         self.assertEqual(config.METABASE_COLLECTION_ID, 12)
         self.assertEqual(json.loads(config.SETTINGS_FILE.read_text(encoding="utf-8"))["metabase_collection_id"], 12)
+
+    def test_settings_from_before_several_databases_are_carried_over(self):
+        config.SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        config.SETTINGS_FILE.write_text(json.dumps({
+            "db_host": "db.example.com", "db_port": 6432, "db_name": "shop", "db_user": "reader",
+            "db_password": secretbox.protect("s3cret-pw"), "db_sslmode": "verify-full", "db_schemas": ["public", "sales"],
+            "metabase_url": "https://mb.example.com", "metabase_api_key": secretbox.protect("mb_secret-key"),
+            "metabase_database_id": 42, "metabase_collection_id": 9, "timezone": "Asia/Kolkata"}), encoding="utf-8")
+        settings.start()
+        self.assertEqual(config.DATABASES, [{
+            "id": "main", "name": "shop", "host": "db.example.com", "port": 6432, "dbname": "shop", "user": "reader",
+            "password": "s3cret-pw", "sslmode": "verify-full", "schemas": ["public", "sales"], "metabase_database_id": 42}])
+        self.assertEqual((config.METABASE_API_KEY, config.METABASE_COLLECTION_ID, config.TIMEZONE), ("mb_secret-key", 9, "Asia/Kolkata"))
+        self.assertTrue(settings.database_ready() and settings.metabase_ready())
+        # The next save writes the new shape, and it reads back the same.
+        settings.save({"timezone": "UTC"})
+        stored = json.loads(config.SETTINGS_FILE.read_text(encoding="utf-8"))
+        self.assertNotIn("db_host", stored)
+        self.assertEqual(stored["databases"][0]["id"], "main")
+        before = config.DATABASES
+        settings.start()
+        self.assertEqual(config.DATABASES, before)
 
 
 class FakeCursor:
@@ -93,7 +126,7 @@ class ChecksTest(StudioCase):
     def look(self, row, **extra):
         conn = FakeConnection(row, **extra)
         with mock.patch.object(psycopg2, "connect", return_value=conn) as connect:
-            reply = checks.database({**DB, "db_schemas": "public", "timezone": "UTC"})
+            reply = checks.database({**DB, "schemas": "public"})
         self.assertTrue(conn.closed)
         self.assertIn("default_transaction_read_only=on", connect.call_args.kwargs["options"])
         return reply
@@ -115,14 +148,17 @@ class ChecksTest(StudioCase):
         with mock.patch.object(psycopg2, "connect", side_effect=psycopg2.OperationalError("password authentication failed\nmore")):
             reply = checks.database(DB)
         self.assertEqual(reply, {"ok": False, "error": "password authentication failed"})
-        self.assertFalse(checks.database({"db_host": "x"})["ok"])
+        self.assertFalse(checks.database({"host": "x"})["ok"])
 
     def test_the_saved_password_is_used_when_the_form_leaves_it_empty(self):
-        settings.save(DB)
+        settings.save_database(DB)
+        settings.save_database({**DB, "name": "Other", "host": "other.example.com", "password": "another-pw"})
         conn = FakeConnection(("reader", "17.2", 1, 1, 0, 0, False))
         with mock.patch.object(psycopg2, "connect", return_value=conn) as connect:
-            checks.database({"db_host": "db.example.com", "db_password": ""})
-        self.assertEqual(connect.call_args.kwargs["password"], "s3cret-pw")
+            checks.database({"id": "other", "host": "other.example.com", "password": ""})
+        self.assertEqual(connect.call_args.kwargs["password"], "another-pw")
+        # A database that is not saved yet has no password to fall back on.
+        self.assertFalse(checks.database({"host": "db.example.com", "dbname": "shop", "user": "reader", "password": ""})["ok"])
 
     def test_metabase(self):
         fake = FakeMetabase()
@@ -152,18 +188,22 @@ class SettingsPageTest(StudioCase):
         return response.status, text
 
     def test_a_new_install_is_asked_to_set_up(self):
-        setup = json.loads(self.ask("GET", "/api/state")[1])["setup"]
-        self.assertEqual((setup["database"], setup["metabase"], setup["tables"]), (False, False, None))
+        state = json.loads(self.ask("GET", "/api/state")[1])
+        self.assertEqual((state["setup"]["database"], state["setup"]["metabase"], state["setup"]["tables"]), (False, False, None))
+        self.assertEqual(state["databases"], [])
 
     def test_saving_from_the_page(self):
         port = config.PORT
-        status, text = self.ask("POST", "/api/settings", {"values": {**DB, "port": port, "metabase_api_key": "mb_secret-key"}})
+        status, added = self.ask("POST", "/api/settings/database", {"values": DB})
         self.assertEqual(status, 200)
-        self.assertTrue(json.loads(text)["setup"]["database"])
-        for reply in (text, self.ask("GET", "/api/settings")[1], self.ask("GET", "/api/state")[1]):
+        self.assertEqual((json.loads(added)["id"], json.loads(added)["setup"]["database"]), ("main", True))
+        status, text = self.ask("POST", "/api/settings", {"values": {"port": port, "metabase_api_key": "mb_secret-key"}})
+        self.assertEqual(status, 200)
+        for reply in (added, text, self.ask("GET", "/api/settings")[1], self.ask("GET", "/api/state")[1]):
             self.assertNotIn("s3cret-pw", reply)
             self.assertNotIn("mb_secret-key", reply)
         self.assertIn("Local port", json.loads(self.ask("POST", "/api/settings", {"values": {"port": 1}})[1])["problems"][0])
+        self.assertIn("name", json.loads(self.ask("POST", "/api/settings/database", {"values": {**DB, "name": ""}})[1])["problems"][0])
 
     def test_settings_need_the_session_like_everything_else(self):
         conn = http.client.HTTPConnection("127.0.0.1", config.PORT, timeout=10)

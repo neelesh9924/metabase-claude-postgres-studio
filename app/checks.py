@@ -38,15 +38,21 @@ def _filled(values, keys):
 
 
 def database(values):
-    v = _filled(values, ("db_host", "db_port", "db_name", "db_user", "db_password", "db_sslmode", "db_schemas", "timezone"))
-    schemas = v["db_schemas"].split(",") if isinstance(v["db_schemas"], str) else list(v["db_schemas"])
+    """Try one database as the form has it. For a saved database (its id is given) an empty field means the saved value."""
+    values = values or {}
+    saved = config.database(str(values["id"])) if values.get("id") else None
+    base = saved or config.DATABASE_FIELDS
+    v = {key: base[key] if values.get(key) in (None, "") else values[key]
+         for key in ("host", "port", "dbname", "user", "password", "sslmode", "schemas")}
+    v["timezone"] = values.get("timezone") or config.TIMEZONE
+    schemas = v["schemas"].split(",") if isinstance(v["schemas"], str) else list(v["schemas"])
     schemas = [s.strip() for s in schemas if s.strip()]
-    if not (v["db_host"] and v["db_name"] and v["db_user"] and v["db_password"]):
+    if not (v["host"] and v["dbname"] and v["user"] and v["password"]):
         return {"ok": False, "error": "Fill in the host, the database, the user and the password."}
     try:
         conn = psycopg2.connect(
-            host=v["db_host"], port=int(v["db_port"]), dbname=v["db_name"], user=v["db_user"], password=v["db_password"],
-            sslmode=v["db_sslmode"], connect_timeout=10, application_name=config.APP_ID,
+            host=v["host"], port=int(v["port"]), dbname=v["dbname"], user=v["user"], password=v["password"],
+            sslmode=v["sslmode"], connect_timeout=10, application_name=config.APP_ID,
             options="-c default_transaction_read_only=on -c statement_timeout=10000",
         )
     except (psycopg2.Error, ValueError) as exc:

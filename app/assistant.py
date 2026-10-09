@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from . import config, specs
+from . import config, schema, specs
 from .claude import MCP_SERVER, ClaudeRefused, ClaudeRunner, RunRequest, ToolPolicy
 
 NEW = "_new"
@@ -91,28 +91,38 @@ def _history(messages, limit=6):
     return ("\n\nEarlier in this conversation:\n" + "\n".join(lines)) if lines else ""
 
 
-def plan_prompt(text, earlier):
+def _on(database):
+    """A sentence naming the one database a run works on, or nothing when there is none to name."""
+    entry = config.database(database) if database else None
+    if entry is None:
+        return ""
+    return f'This dashboard is for the database "{entry["name"]}". The studio tools show and query that database only.\n\n'
+
+
+def plan_prompt(text, earlier, database=None):
     return (
         'Use the dashboard-build skill, phase "plan". Do not run queries in this phase.\n\n'
-        f"The user wants this new dashboard:\n{_quote(text)}{_history(earlier)}\n\n"
+        f"{_on(database)}The user wants this new dashboard:\n{_quote(text)}{_history(earlier)}\n\n"
         "Write two or three sentences on what you plan. Then end your reply with the plan as one JSON "
         f"object, alone between a line {MARK_START} and a line {MARK_END}:\n{PLAN_SHAPE}"
     )
 
 
-def build_prompt(slug, plan, request):
+def build_prompt(slug, plan, request, database=None):
+    stamp = f'In dashboard.json write "database": "{database}" right after the description, exactly so.\n' if database else ""
     return (
         'Use the dashboard-build skill, phase "build".\n\n'
-        f"Build this approved plan. The slug is {slug} and the folder is dashboards/{slug}/.\n"
+        f"{_on(database)}Build this approved plan. The slug is {slug} and the folder is dashboards/{slug}/.\n{stamp}"
         f"Plan:\n{json.dumps(plan, indent=1)}\n\nThe user's request was:\n{_quote(request)}\n\n"
         "Finish with two or three sentences: what was built, and anything left out and why."
     )
 
 
-def edit_prompt(slug, text, earlier):
+def edit_prompt(slug, text, earlier, database=None):
+    keep = 'Leave "database" in dashboard.json as it is.\n' if database else ""
     return (
         "Use the dashboard-edit skill.\n\n"
-        f"Dashboard: {slug} (folder dashboards/{slug}/).\nThe user asks:\n{_quote(text)}{_history(earlier)}\n\n"
+        f"{_on(database)}Dashboard: {slug} (folder dashboards/{slug}/).\n{keep}The user asks:\n{_quote(text)}{_history(earlier)}\n\n"
         "Finish with one or two sentences on what changed."
     )
 
@@ -177,6 +187,7 @@ class Job:
     queries: int = 0
     activity: list = field(default_factory=list)
     cancel: threading.Event = field(default_factory=threading.Event)
+    database: str | None = None   # the one database this run may look at and query
 
     def note(self, text, detail=""):
         entry = {"at": datetime.now().strftime("%H:%M:%S"), "text": str(text)[:200], "detail": str(detail)[:200]}
@@ -187,7 +198,7 @@ class Job:
 
     def public(self):
         return {"id": self.id, "kind": self.kind, "key": self.key, "slug": self.slug, "status": self.status,
-                "started": self.started, "queries": self.queries, "activity": self.activity[-40:]}
+                "database": self.database, "started": self.started, "queries": self.queries, "activity": self.activity[-40:]}
 
 
 class Assistant:
@@ -245,7 +256,19 @@ class Assistant:
             return job
         return None
 
-    def ask(self, mode, slug, text):
+    @staticmethod
+    def _chosen(database):
+        """(id of the database a new dashboard is planned on, or the reason it cannot be)."""
+        if not config.DATABASES:
+            return None, None  # nothing is set up; Claude's tools will say so
+        entry = config.database(str(database)) if database else config.DATABASES[0]
+        if entry is None:
+            return None, "That database is no longer in Settings. Pick another."
+        if schema.summary(entry["id"]) is None:
+            return None, f'The table list of "{entry["name"]}" has not been read yet. Read it in Settings first.'
+        return entry["id"], None
+
+    def ask(self, mode, slug, text, database=None):
         text = (text or "").strip()
         if not text:
             return "Type what you want first."
@@ -255,15 +278,19 @@ class Assistant:
             if self.busy() or self._closing:
                 return "Claude is still working on the last request."
             if mode == "new":
+                database, problem = self._chosen(database)
+                if problem:
+                    return problem
                 earlier = self.thread(NEW)
                 self._add(NEW, "user", text)
-                job = self._job("plan", NEW, None, "plan", LOOK_TOOLS)
-                req = self._request(job, plan_prompt(text, earlier), plan_policy(), config.STUDIO_PLAN_TIMEOUT)
-            elif mode == "edit" and specs.load(slug) is not None:
+                job = self._job("plan", NEW, None, "plan", LOOK_TOOLS, database)
+                req = self._request(job, plan_prompt(text, earlier, database), plan_policy(), config.STUDIO_PLAN_TIMEOUT)
+            elif mode == "edit" and (spec := specs.load(slug)) is not None:
+                database = spec["database"]
                 earlier = self.thread(slug)
                 self._add(slug, "user", text)
-                job = self._job("edit", slug, slug, slug, ALL_TOOLS)
-                req = self._request(job, edit_prompt(slug, text, earlier), write_policy(slug), config.STUDIO_BUILD_TIMEOUT)
+                job = self._job("edit", slug, slug, slug, ALL_TOOLS, database)
+                req = self._request(job, edit_prompt(slug, text, earlier, database), write_policy(slug), config.STUDIO_BUILD_TIMEOUT)
             else:
                 return "Open a dashboard first, or start a new one."
             self._start(job, req, {})
@@ -277,11 +304,14 @@ class Assistant:
             found = next((m for m in messages if m["role"] == "plan" and m["id"] == plan_id), None)
             if found is None:
                 return "That plan is no longer there. Ask again."
+            database = found.get("database")
+            if database and config.database(database) is None:
+                return "The database this plan was made for is no longer in Settings. Ask again."
             plan = dict(found["plan"])
             slug = plan["slug"] = self._free_slug(plan["slug"])
             request = next((m["text"] for m in reversed(messages) if m["role"] == "user"), plan["name"])
-            job = self._job("build", NEW, slug, slug, ALL_TOOLS)
-            req = self._request(job, build_prompt(slug, plan, request), write_policy(slug), config.STUDIO_BUILD_TIMEOUT)
+            job = self._job("build", NEW, slug, slug, ALL_TOOLS, database)
+            req = self._request(job, build_prompt(slug, plan, request, database), write_policy(slug), config.STUDIO_BUILD_TIMEOUT)
             self._add(NEW, "info", f"Building “{plan['name']}”.")
             self._start(job, req, {"plan": plan})
         return None
@@ -328,8 +358,8 @@ class Assistant:
             n += 1
         return f"{slug}_{n}"
 
-    def _job(self, kind, key, slug, label, tools):
-        return Job(id=secrets.token_hex(6), kind=kind, key=key, slug=slug, label=label, tools=tools,
+    def _job(self, kind, key, slug, label, tools, database=None):
+        return Job(id=secrets.token_hex(6), kind=kind, key=key, slug=slug, label=label, tools=tools, database=database,
                    token=secrets.token_urlsafe(32), started=datetime.now().isoformat(timespec="seconds"))
 
     def _request(self, job, prompt, policy, timeout):
@@ -379,14 +409,21 @@ class Assistant:
                 self._add(NEW, "claude", clean or text, meta=meta)
                 self._add(NEW, "error", "Claude's reply had no usable plan. Ask again, perhaps with more detail.")
             else:
-                self._add(NEW, "plan", clean, plan=plan, meta=meta)
+                entry = config.database(job.database) if job.database else None
+                where = {"database": entry["id"], "database_name": entry["name"]} if entry else {}
+                self._add(NEW, "plan", clean, plan=plan, meta=meta, **where)
             return "done"
         if job.kind == "edit":
+            # A dashboard stays on the database it was made for, whatever the edit did to the file.
+            after = specs.load(job.slug)
+            if job.database and after and after["database"] != job.database:
+                specs.assign(job.slug, job.database)
             self._add(job.key, "claude", text.strip(), meta=meta)
             return "done"
         if specs.load(job.slug) is None:
             self._add(NEW, "error", "Claude finished, but the dashboard's dashboard.json is missing.", meta=meta)
             return "failed"
+        specs.assign(job.slug, job.database)
         # The planning conversation becomes the new dashboard's conversation.
         moved = self.thread(NEW) + [{"id": secrets.token_hex(6), "role": "claude", "text": text.strip(),
                                      "at": datetime.now().isoformat(timespec="seconds"), "meta": meta}]
