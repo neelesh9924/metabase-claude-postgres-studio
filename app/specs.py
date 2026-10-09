@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import shutil
+from datetime import datetime
 
 from . import config, db, filters, guard
 
@@ -30,10 +31,23 @@ PUBLISHED_FILE = "metabase.json"
 
 
 def ensure_sample():
-    """Give a new install the example dashboard to look at."""
+    """Give a new install the example dashboard. Once the folder exists, what is in it is the user's call."""
     sample = config.EXAMPLES_DIR / "sample"
-    if not slugs() and sample.is_dir():
-        shutil.copytree(sample, config.DASHBOARDS_DIR / "sample", dirs_exist_ok=True)
+    if not config.DASHBOARDS_DIR.exists() and sample.is_dir():
+        shutil.copytree(sample, config.DASHBOARDS_DIR / "sample")
+
+
+def remove(slug):
+    """Take a dashboard out of the studio. Its folder moves to data/trash, to be put back by hand if wanted.
+
+    Returns where it went, or None when there is no such dashboard.
+    """
+    if slug not in slugs():
+        return None
+    target = config.DATA_DIR / "trash" / f"{slug}-{datetime.now():%Y%m%d-%H%M%S}"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(config.DASHBOARDS_DIR / slug), str(target))
+    return target
 
 
 def version(slug):

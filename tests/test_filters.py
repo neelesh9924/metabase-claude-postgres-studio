@@ -224,6 +224,15 @@ class GoLiveFiltersTest(FilterCase):
         metabase.publish("ops")
         self.assertEqual([p["id"] for p in next(iter(self.fake.dashboards.values()))["parameters"]], ids, "filters keep their identity")
 
+    def test_a_different_time_zone_in_metabase_is_pointed_out(self):
+        self.dashboard()
+        self.assertEqual(metabase.plan("ops")["warnings"], [])
+        self.fake.report_timezone = "UTC"
+        warnings = metabase.plan("ops")["warnings"]
+        self.assertIn("Metabase counts days in UTC, the studio in Asia/Kolkata", warnings[0])
+        self.fake.report_timezone = None  # Metabase follows the database: nothing to compare
+        self.assertEqual(metabase.plan("ops")["warnings"], [])
+
     def test_what_stops_a_filtered_go_live(self):
         self.dashboard(drawn=False)
         blockers = " | ".join(metabase.plan("ops")["blockers"])

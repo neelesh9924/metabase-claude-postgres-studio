@@ -205,6 +205,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._run_card(body)
         if path == "/api/options":
             return self._options(body)
+        if path == "/api/remove":
+            return self._remove(body)
         if path.startswith("/api/golive") or path == "/api/open":
             return self._go_live(path, body)
         if path.startswith("/api/settings"):
@@ -249,6 +251,22 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": str(exc)})
         db.cache_put(listing, result)
         return self._json({"options": [row[0] for row in result["rows"]]})
+
+    def _remove(self, body):
+        """Take a dashboard out of the studio. Metabase is not touched."""
+        slug = body.get("slug")
+        job = self.studio.assistant.job
+        if job and job.status == "running" and slug in (job.slug, job.key):
+            return self._json({"error": "Claude is still working on this dashboard."})
+        try:
+            moved = specs.remove(slug)
+        except OSError:
+            return self._json({"error": "The folder could not be moved just now. Try again."})
+        if moved is None:
+            return self._json({"error": "No such dashboard."})
+        self.studio.assistant.discard(slug, moved)
+        metabase.forget(slug)
+        return self._json({"ok": True})
 
     def _go_live(self, path, body):
         slug = body.get("slug")

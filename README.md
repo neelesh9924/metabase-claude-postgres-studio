@@ -56,7 +56,8 @@ it will use. Nothing is read from the database until you press "Build this dashb
 row: a date range with presets, and dropdowns or text boxes. They filter the preview and
 become native Metabase filters at Go live. A dropdown's choices are taken as they were
 when you last opened the dashboard here, so opening the list in Metabase runs nothing.
-Metabase counts days in its own report time zone; set the studio's time zone to match.
+Metabase counts days in its own report time zone. Go live warns when it differs from the
+studio's, so that a date filter means the same days in both.
 
 ![A dashboard with a date filter and a status filter](docs/img/filters.png)
 
@@ -67,6 +68,9 @@ Table, SQL and Refresh tools (move the mouse over the card).
 and nothing is sent until you confirm. A later Go live updates the same dashboard. The
 label beside the title says where a dashboard stands: Draft, Live, "Changes not live",
 or what became of it in Metabase (trashed, deleted, moved).
+
+**Remove.** The bin button beside Go live takes a dashboard out of the studio. Its files
+move to `data/trash/`, from where they can be put back by hand. Metabase is not touched.
 
 ## How it stays safe
 

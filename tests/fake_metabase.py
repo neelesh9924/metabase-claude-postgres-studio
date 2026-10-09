@@ -27,6 +27,7 @@ class FakeMetabase:
             {"id": 501, "schema": "public", "table_name": "orders", "name": "created_at"},
             {"id": 502, "schema": "public", "table_name": "orders", "name": "status"},
         ]
+        self.report_timezone = "Asia/Kolkata"
         self.dashboard_questions = True  # False: a Metabase that refuses dashboard_id on a card
         self.fail = None                 # (method, path, nth): answer 500 to the nth such request, once
         self._seen = {}
@@ -110,6 +111,8 @@ class FakeMetabase:
             return 500, {"message": "boom"}
         if (method, path) == ("GET", "/api/user/current"):
             return 200, {"id": 1, "common_name": "studio-key", "is_superuser": False}
+        if (method, path) == ("GET", "/api/session/properties"):
+            return 200, {"report-timezone-long": self.report_timezone}
         if (method, path) == ("GET", "/api/database"):
             return 200, {"data": self.databases}
         if (method, path) == ("GET", "/api/collection"):

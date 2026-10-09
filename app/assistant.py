@@ -300,6 +300,15 @@ class Assistant:
                 self._save(key, [])
         return None
 
+    def discard(self, key, folder):
+        """A removed dashboard's conversation goes with its files."""
+        with self._lock:
+            try:
+                os.replace(self._path(key), folder / "conversation.json")
+            except OSError:
+                pass
+            self.rev += 1
+
     def shutdown(self, timeout=15):
         self._closing = True
         self.stop()

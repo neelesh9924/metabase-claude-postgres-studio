@@ -168,6 +168,10 @@ def remembered(slug):
     return _seen.get(slug, (0, None))[1]
 
 
+def forget(slug):
+    _seen.pop(slug, None)
+
+
 def status(slug):
     """What became of a published dashboard: live, trashed, gone, moved, or unknown when Metabase cannot say."""
     state = specs.published(slug)
@@ -233,6 +237,11 @@ def plan(slug):
         where = target()
         if spec["filters"]:
             _field_ids(spec, where)
+        if any(f["type"] == "date" for f in spec["filters"]):
+            theirs = (_call("GET", "/api/session/properties") or {}).get("report-timezone-long")
+            if theirs and theirs != config.TIMEZONE:
+                warnings.append(f"Metabase counts days in {theirs}, the studio in {config.TIMEZONE}. Around midnight a date "
+                                "filter can show a different day there. Set the same time zone in Settings.")
         if state.get("dashboard_id"):
             live, blocker, warning = _live_dashboard(state, where)
             if blocker:

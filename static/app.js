@@ -1138,6 +1138,35 @@
     if (!document.hidden) checkLive();
   });
 
+  // ---------- remove ----------
+
+  function askRemove() {
+    const spec = state.spec;
+    if (!spec) return;
+    const title = h("h2", null, `Remove ${spec.name}?`);
+    const stillLive = spec.live && spec.metabase !== "trashed" && spec.metabase !== "gone";
+    const remove = h("button", { class: "btn danger", type: "button" }, "Remove");
+    remove.addEventListener("click", async () => {
+      remove.disabled = true;
+      const reply = await post("/api/remove", { slug: spec.slug });
+      if (reply.error) return showLive(title, liveList("It was not removed", [reply.error], "stop"), liveFooter(closeButton("Close")));
+      $("liveDialog").close();
+      state.slug = null;
+      state.spec = null;
+      history.replaceState(null, "", "#");
+      poll();
+    });
+    showLive(
+      title,
+      h("p", null, "It leaves the studio. Its files move to the trash folder inside data, so it can be put back by hand."),
+      stillLive ? h("p", { class: "live-soft" }, "It is live in Metabase and stays there. Remove it in Metabase yourself if it should go.") : null,
+      liveFooter(closeButton("Cancel"), remove)
+    );
+    $("liveDialog").showModal();
+  }
+
+  $("removeDash").addEventListener("click", askRemove);
+
   // ---------- settings and theme ----------
 
   function themeChanged() {
@@ -1201,7 +1230,7 @@
     ["newDash", "plus"], ["emptyNew", "plus"], ["refreshAll", "refresh"], ["openLive", "external"], ["goLive", "upload"],
     ["showAssist", "sparkle"], ["assistMark", "sparkle", 18], ["emptyMark", "chart", 26], ["assistClear", "trash", 15],
     ["hideAssist", "panel", 15], ["sendBtn", "send", 15], ["stopBtn", "stop", 14], ["sideFoot", "lock", 14],
-    ["openSettings", "settings", 17],
+    ["openSettings", "settings", 17], ["removeDash", "trash", 16],
   ]) {
     $(id).prepend(icon(name, size));
   }
