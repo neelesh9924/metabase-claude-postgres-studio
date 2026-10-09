@@ -74,7 +74,19 @@ elif mode == "plan":
             "reads": [{"table": "orders", "size": "~11M rows", "filter": "created_at, last 30 days"}],
             "assumptions": ["offered: " + ",".join(offered), "query in plan refused: " + str(refused["isError"])],
             "left_out": []}
-    finish("I will count tickets per day.\n<<<STUDIO_JSON\n" + json.dumps(plan) + "\nSTUDIO_JSON>>>")
+    said = "I will count tickets per day."
+    if os.environ.get("FAKE_PRETTY"):  # the demo server's plan, fit to be seen
+        said = "Two numbers for today, a line of orders per day and a ranking of products, all from orders and order_items."
+        plan = {"slug": "daily_orders", "name": "Daily orders", "description": "Orders and revenue per day, and the top products.",
+                "cards": [{"name": "Orders today", "display": "scalar", "shows": "count of orders created today"},
+                          {"name": "Revenue today", "display": "scalar", "shows": "sum of amount for today"},
+                          {"name": "Orders per day", "display": "line", "shows": "orders per day, last 30 days"},
+                          {"name": "Top products", "display": "row", "shows": "10 products with the most units, last 30 days"}],
+                "reads": [{"table": "orders", "size": "~1.8M rows", "filter": "created_at (indexed), last 30 days"},
+                          {"table": "order_items", "size": "~5.2M rows", "filter": "joined to orders of the last 30 days"}],
+                "assumptions": ["The last 30 days means today and the 29 days before it.", "Cancelled orders are left out."],
+                "left_out": []}
+    finish(said + "\n<<<STUDIO_JSON\n" + json.dumps(plan) + "\nSTUDIO_JSON>>>")
 elif mode == "build":
     slug = stdin.split("The slug is ")[1].split(" ")[0]
     folder = Path(os.environ["FAKE_ROOT"]) / "dashboards" / slug

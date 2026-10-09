@@ -177,7 +177,7 @@ def main():
                                        **({"model": "claude-opus", "answered": True} if run else {})}
     real_metabase_check = checks.metabase_side
     checks.metabase_side = lambda values: real_metabase_check({"metabase_url": fake.url, "metabase_api_key": KEY})
-    os.environ.update({"FAKE_ROOT": str(TMP), "FAKE_DELAY": os.environ.get("FAKE_DELAY", "1.2")})
+    os.environ.update({"FAKE_ROOT": str(TMP), "FAKE_DELAY": os.environ.get("FAKE_DELAY", "1.2"), "FAKE_PRETTY": "1"})
     httpd = server.make_server(TOKEN, runner=DemoRunner(prefix=[sys.executable, str(ROOT / "tests" / "fake_claude.py")]))
     print(f"Demo studio: http://127.0.0.1:{port}/auth?token={TOKEN}   (folder {TMP})", flush=True)
     print(f"Fake Metabase: {fake.url}   (key {KEY})", flush=True)
