@@ -23,6 +23,10 @@ class FakeMetabase:
             {"id": DATABASE, "name": "Warehouse (read-only)", "native_permissions": "write"},
             {"id": 8, "name": "Marketing", "native_permissions": "write"},
         ]
+        self.fields = [
+            {"id": 501, "schema": "public", "table_name": "orders", "name": "created_at"},
+            {"id": 502, "schema": "public", "table_name": "orders", "name": "status"},
+        ]
         self.dashboard_questions = True  # False: a Metabase that refuses dashboard_id on a card
         self.fail = None                 # (method, path, nth): answer 500 to the nth such request, once
         self._seen = {}
@@ -115,6 +119,8 @@ class FakeMetabase:
         if (method, path) == ("POST", "/api/dataset"):
             value = "30s" if "statement_timeout" in body["native"]["query"] else "on"
             return 200, {"data": {"rows": [[value]]}}
+        if method == "GET" and re.fullmatch(r"/api/database/\d+/fields", path):
+            return 200, self.fields
         match = re.fullmatch(r"/api/collection/(\d+)", path)
         if match and method == "GET":
             found = self.collections.get(int(match.group(1)))
@@ -134,7 +140,7 @@ class FakeMetabase:
                 return 200, dash
             if not self._writable(dash["collection_id"]):
                 return 403, {"message": "You don't have permissions to do that."}
-            for field in ("name", "description", "archived"):
+            for field in ("name", "description", "archived", "parameters"):
                 if field in body:
                     dash[field] = body[field]
             if "dashcards" in body:

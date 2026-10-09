@@ -23,7 +23,7 @@
   const $ = (id) => document.getElementById(id);
   const state = {
     slug: null, spec: null, cards: {}, view: {}, gen: 0, chain: Promise.resolve(), offline: false,
-    page: "dashboards", setup: null,
+    page: "dashboards", setup: null, picked: {}, listsAsked: new Set(),
     mode: "edit", assist: { rev: -1, key: null, job: null, messages: [], followed: undefined, flash: "", again: false },
   };
   const elements = new Map();
@@ -574,7 +574,7 @@
       renderCard(key);
       let reply;
       try {
-        reply = await api("/api/run", { slug, key, allow_heavy: !!allowHeavy });
+        reply = await api("/api/run", { slug, key, allow_heavy: !!allowHeavy, values: state.picked[slug] });
       } catch {
         reply = { error: "The studio server did not answer." };
       }
@@ -641,6 +641,7 @@
     renderTop();
     document.title = `${spec.name} · Metabase Claude Studio`;
     renderNotice(spec.problems.length ? "This dashboard's files need fixing" : "", spec.problems);
+    renderFilters();
     const grid = $("grid");
     grid.replaceChildren();
     sizeGrid();
@@ -652,6 +653,81 @@
       grid.append(el);
     }
     for (const card of spec.cards) renderCard(card.key);
+  }
+
+  // ---------- filters ----------
+
+  const DATE_CHOICES = [
+    ["", "All time"], ["thisday", "Today"], ["past1days", "Yesterday"], ["past7days", "Previous 7 days"],
+    ["past30days", "Previous 30 days"], ["past90days", "Previous 90 days"], ["thismonth", "This month"],
+    ["past1months", "Previous month"], ["thisyear", "This year"],
+  ];
+
+  // A changed filter reloads the dashboard for the new values; only the cards that use it run again.
+  function pick(key, value) {
+    const slug = state.slug;
+    state.picked[slug] = { ...state.picked[slug], [key]: value };
+    loadDashboard(slug);
+  }
+
+  function dateControl(def, value) {
+    const current = value || "";
+    const listed = DATE_CHOICES.some(([v]) => v === current);
+    const range = /^(\d{4}-\d\d-\d\d)?~(\d{4}-\d\d-\d\d)?$/.exec(current) || [];
+    const choices = [...DATE_CHOICES, ["custom", "Custom range…"]];
+    const select = h("select", { class: "input", "aria-label": def.name },
+      choices.map(([v, label]) => h("option", { value: v, selected: listed ? v === current : v === "custom" }, label)));
+    const from = h("input", { class: "input", type: "date", value: range[1] || "", "aria-label": `${def.name} from` });
+    const to = h("input", { class: "input", type: "date", value: range[2] || "", "aria-label": `${def.name} to` });
+    const custom = h("span", { class: "filter-range", hidden: listed }, from, "to", to);
+    const apply = () => {
+      if (from.value || to.value) pick(def.key, `${from.value}~${to.value}`);
+    };
+    select.addEventListener("change", () => {
+      if (select.value !== "custom") return pick(def.key, select.value);
+      custom.hidden = false;
+      from.focus();
+    });
+    from.addEventListener("change", apply);
+    to.addEventListener("change", apply);
+    return [select, custom];
+  }
+
+  function choiceControl(def, value) {
+    const list = (state.spec.options || {})[def.key];
+    if (Array.isArray(list)) {
+      const select = h("select", { class: "input", "aria-label": def.name },
+        h("option", { value: "" }, "All"),
+        list.map((item) => h("option", { value: String(item), selected: String(item) === String(value ?? "") }, String(item))));
+      select.addEventListener("change", () => pick(def.key, select.value));
+      return [select];
+    }
+    const input = h("input", { class: "input", value: value ?? "", "aria-label": def.name, placeholder: def.values ? "Loading the list…" : "Any",
+      inputmode: def.type === "number" ? "decimal" : null });
+    input.addEventListener("change", () => pick(def.key, input.value.trim()));
+    return [input];
+  }
+
+  function loadList(key) {
+    const slug = state.slug;
+    if (state.listsAsked.has(`${slug}/${key}`)) return;
+    state.listsAsked.add(`${slug}/${key}`);
+    state.chain = state.chain.then(async () => {
+      const reply = await post("/api/options", { slug, key });
+      if (!reply.options || state.slug !== slug || !state.spec) return;
+      state.spec.options[key] = reply.options;
+      renderFilters();
+    });
+  }
+
+  function renderFilters() {
+    const defs = state.spec.filters || [];
+    const values = state.spec.values || {};
+    $("filters").hidden = !defs.length;
+    $("filters").replaceChildren(...defs.map((def) =>
+      h("div", { class: "filter" }, h("span", { class: "filter-name" }, def.name),
+        h("div", { class: "filter-controls" }, def.type === "date" ? dateControl(def, values[def.key]) : choiceControl(def, values[def.key])))));
+    for (const def of defs) if (def.values && !(state.spec.options || {})[def.key]) loadList(def.key);
   }
 
   function renderList(dashboards) {
@@ -672,8 +748,11 @@
   }
 
   async function loadDashboard(slug) {
-    const spec = await api(`/api/dashboard?slug=${encodeURIComponent(slug)}`);
+    const picked = state.picked[slug];
+    const chosen = picked ? `&values=${encodeURIComponent(JSON.stringify(picked))}` : "";
+    const spec = await api(`/api/dashboard?slug=${encodeURIComponent(slug)}${chosen}`);
     if (spec.error) return;
+    state.picked[slug] = spec.values || {};
     const previous = state.slug === slug ? state.cards : {};
     if (state.slug !== slug) state.view = {};
     state.gen += 1;

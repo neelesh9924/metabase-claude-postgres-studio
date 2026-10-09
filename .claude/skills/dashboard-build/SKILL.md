@@ -47,7 +47,9 @@ Build the approved plan and nothing beyond it.
 3. Look at the rows before trusting them: are the numbers plausible, are there gaps or
    nulls, is a "Personal data hidden" warning shown? Remove any personal-data column.
 4. Write `dashboards/<slug>/dashboard.json` last, once the queries work, so the preview
-   never shows a half-made dashboard.
+   never shows a half-made dashboard. The exception is a dashboard with filters (see
+   "Filters" in CLAUDE.md): a query with `{{...}}` can only be tested once
+   `dashboard.json` names the filters and the card, so write that file first.
 5. Run `check_dashboard` and fix every problem it lists.
 6. Say in two or three sentences what was built, and what was left out and why.
 

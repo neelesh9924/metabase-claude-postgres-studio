@@ -21,7 +21,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from . import checks, config, db, guard, mcp, metabase, schema, settings, specs
+from . import checks, config, db, filters, guard, mcp, metabase, schema, settings, specs
 from .assistant import Assistant
 
 COOKIE = "studio_session"
@@ -155,7 +155,28 @@ class Handler(BaseHTTPRequestHandler):
             spec = specs.load(query.get("slug", [""])[0])
             if spec is None:
                 return self._json({"error": "No such dashboard."}, 404)
-            spec["data"] = {c["key"]: db.cache_get(c["sql"]) for c in spec["cards"] if c["sql"]}
+            try:
+                picked = json.loads(query.get("values", ["null"])[0])
+            except ValueError:
+                picked = None
+            spec["values"] = specs.effective(spec, picked)
+            spec["data"] = {}
+            for card in spec["cards"]:
+                if not card["sql"]:
+                    continue
+                try:
+                    runs = specs.query(card, spec, spec["values"])
+                except filters.FilterError as exc:
+                    card["filter_error"] = str(exc)
+                    continue
+                # The page tells a changed card by this: the query as it runs for the filters picked.
+                card["sql_hash"] = db.sql_hash(runs)
+                spec["data"][card["key"]] = db.cache_get(runs)
+            spec["options"] = {}
+            for entry in spec["filters"]:
+                listing = specs.options_query(spec, entry["key"])
+                found = db.cache_get(listing) if listing else None
+                spec["options"][entry["key"]] = [row[0] for row in found["rows"]] if found else None
             spec["limits"] = {"plan_cost": config.MAX_PLAN_COST, "rows": config.PREVIEW_ROW_LIMIT}
             spec["metabase"] = metabase.remembered(spec["slug"])
             return self._json(spec)
@@ -182,6 +203,8 @@ class Handler(BaseHTTPRequestHandler):
         assistant = self.studio.assistant
         if path == "/api/run":
             return self._run_card(body)
+        if path == "/api/options":
+            return self._options(body)
         if path.startswith("/api/golive") or path == "/api/open":
             return self._go_live(path, body)
         if path.startswith("/api/settings"):
@@ -205,13 +228,27 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": "No such card."}, 404)
         source = f"preview {spec['slug']}/{card['key']}"
         try:
-            result = db.run(card["sql"], allow_heavy=bool(body.get("allow_heavy")), source=source)
+            runs = specs.query(card, spec, body.get("values"))
+            result = db.run(runs, allow_heavy=bool(body.get("allow_heavy")), source=source)
         except db.Heavy as exc:
             return self._json({"heavy": {"cost": exc.cost, "limit": config.MAX_PLAN_COST}})
-        except (db.QueryError, guard.Rejected) as exc:
+        except (db.QueryError, guard.Rejected, filters.FilterError) as exc:
             return self._json({"error": str(exc)})
-        db.cache_put(card["sql"], result)
-        return self._json({"result": result, "sql_hash": card["sql_hash"]})
+        db.cache_put(runs, result)
+        return self._json({"result": result, "sql_hash": db.sql_hash(runs)})
+
+    def _options(self, body):
+        """The choices of one filter, from the query its dashboard names for them."""
+        spec = specs.load(body.get("slug"))
+        listing = specs.options_query(spec, body.get("key")) if spec else None
+        if not listing:
+            return self._json({"error": "This filter has no list."})
+        try:
+            result = db.run(listing, limit=1000, source=f"preview {spec['slug']}/list:{body.get('key')}")
+        except (db.QueryError, guard.Rejected, db.Heavy) as exc:
+            return self._json({"error": str(exc)})
+        db.cache_put(listing, result)
+        return self._json({"options": [row[0] for row in result["rows"]]})
 
     def _go_live(self, path, body):
         slug = body.get("slug")

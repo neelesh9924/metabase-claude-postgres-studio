@@ -9,6 +9,10 @@ the open-source edition. All it needs from Metabase is an API key.
 
 Runs only on your machine. Not affiliated with Metabase, Anthropic or PostgreSQL.
 
+![A dashboard beside the Ask Claude panel](docs/img/dashboard-light.png)
+
+The numbers in these pictures are made up.
+
 ## What you need
 
 - Windows 10 or 11, with Chrome or Edge.
@@ -30,6 +34,8 @@ Runs only on your machine. Not affiliated with Metabase, Anthropic or PostgreSQL
    - **Claude:** it finds Claude Code by itself. "Check the sign-in" sends one short
      request.
 
+![The settings page](docs/img/settings.png)
+
 For a desktop shortcut and a taskbar pin, see [docs/SHORTCUT.md](docs/SHORTCUT.md).
 From a terminal instead: `python studio.py` prints a link and opens it in a browser tab.
 
@@ -42,7 +48,17 @@ window onto the same app.
 Claude first answers with a plan: the cards, and the tables it will read with the filter
 it will use. Nothing is read from the database until you press "Build this dashboard".
 
+![Claude's plan, waiting for the Build button](docs/img/plan.png)
+
 **A change.** Open a dashboard and type the change. Changes run directly.
+
+**Filters.** Ask for "a date filter and a status filter" and the dashboard gets a filter
+row: a date range with presets, and dropdowns or text boxes. They filter the preview and
+become native Metabase filters at Go live. A dropdown's choices are taken as they were
+when you last opened the dashboard here, so opening the list in Metabase runs nothing.
+Metabase counts days in its own report time zone; set the studio's time zone to match.
+
+![A dashboard with a date filter and a status filter](docs/img/filters.png)
 
 While Claude works the panel lists each step, and Stop ends it at once. Each card has
 Table, SQL and Refresh tools (move the mouse over the card).

@@ -21,6 +21,8 @@ Inside the app, use the studio tools `list_tables`, `describe_table`, `run_query
 4. When a card is removed, delete its entry from `dashboard.json`. Its `.sql` file can
    stay; an unused file is harmless.
 5. Keep the grid tidy: no overlaps, no gaps left by a removed card.
+   For a filter, follow "Filters" in CLAUDE.md: add it to `filters`, then give each
+   card that should obey it the `{{key}}` in its query and the column in its `filters`.
 6. Run `check_dashboard` and fix every problem it lists.
 7. Say in one or two sentences what changed. If part of the request could not be done,
    say which part and why.

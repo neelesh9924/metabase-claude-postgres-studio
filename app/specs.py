@@ -7,7 +7,7 @@ import json
 import re
 import shutil
 
-from . import config, db, guard
+from . import config, db, filters, guard
 
 GRID_COLUMNS = 24
 DATA_DISPLAYS = {"scalar", "smartscalar", "line", "bar", "area", "combo", "row", "pie", "table"}
@@ -66,6 +66,59 @@ def published(slug):
     return state if isinstance(state, dict) else {}
 
 
+def _filters(raw, folder, problems):
+    """The dashboard's filters, checked."""
+    out = []
+    for index, entry in enumerate(raw if isinstance(raw, list) else []):
+        key = entry.get("key") if isinstance(entry, dict) else None
+        if not isinstance(key, str) or not _KEY.match(key) or any(f["key"] == key for f in out):
+            problems.append(f"Filter {index + 1}: 'key' must be unique and use only a-z, 0-9 and _.")
+            continue
+        if entry.get("type") not in filters.TYPES:
+            problems.append(f"Filter '{key}': 'type' must be one of {', '.join(filters.TYPES)}.")
+            continue
+        item = {"key": key, "name": str(entry.get("name") or key), "type": entry["type"],
+                "default": entry.get("default"), "values": None}
+        try:
+            filters.check_value(item["type"], item["default"])
+        except filters.FilterError as exc:
+            problems.append(f"Filter '{key}': the default is not usable. {exc}")
+            item["default"] = None
+        listed = entry.get("values")
+        if listed:
+            if isinstance(listed, str) and _KEY.match(listed) and (folder / f"{listed}.sql").is_file():
+                item["values"] = listed
+            else:
+                problems.append(f"Filter '{key}': 'values' must name a .sql file in the dashboard's folder.")
+        out.append(item)
+    return out
+
+
+def effective(spec, values=None):
+    """The value of every filter: the given ones, or the defaults when none are given."""
+    if not isinstance(values, dict):
+        return filters.defaults(spec["filters"])
+    return {f["key"]: values.get(f["key"]) for f in spec["filters"]}
+
+
+def query(card, spec, values=None):
+    """A card's query as it will run for these filter values. Raises filters.FilterError."""
+    if not card.get("tags"):
+        return card["sql"]
+    return filters.render(card["sql"], card["filters"], spec["filters"], effective(spec, values))
+
+
+def options_query(spec, key):
+    """The query that lists a filter's choices, or None."""
+    entry = next((f for f in spec["filters"] if f["key"] == key and f["values"]), None)
+    if entry is None:
+        return None
+    try:
+        return guard.check((config.DASHBOARDS_DIR / spec["slug"] / f"{entry['values']}.sql").read_text(encoding="utf-8"))
+    except (OSError, guard.Rejected):
+        return None
+
+
 def _int(card, field, problems, key):
     value = card.get(field)
     if isinstance(value, bool) or not isinstance(value, int):
@@ -95,6 +148,7 @@ def load(slug):
         "live": False,
         "changed": False,
         "url": "",
+        "filters": [],
         "cards": [],
         "problems": [],
     }
@@ -121,6 +175,8 @@ def load(slug):
     else:
         problems.append("The dashboard has no 'name'.")
     out["description"] = raw.get("description") or ""
+    out["filters"] = _filters(raw.get("filters"), folder, problems)
+    known = {f["key"] for f in out["filters"]}
 
     cards = raw.get("cards")
     if not isinstance(cards, list):
@@ -153,6 +209,8 @@ def load(slug):
             "sql": None,
             "sql_hash": None,
             "text": card.get("text") or "",
+            "filters": {str(k): str(v) for k, v in card["filters"].items()} if isinstance(card.get("filters"), dict) else {},
+            "tags": [],
         }
         if item["row"] < 0 or item["col"] < 0 or item["col"] + item["size_x"] > GRID_COLUMNS:
             problems.append(f"Card '{key}' does not fit the {GRID_COLUMNS}-column grid.")
@@ -170,6 +228,17 @@ def load(slug):
                 guard.check(sql)
                 item["sql"] = sql.strip()
                 item["sql_hash"] = db.sql_hash(sql)
+                item["tags"] = filters.tags(sql)
+                for tag in item["tags"]:
+                    if tag not in known:
+                        problems.append(f"Card '{key}' uses {{{{{tag}}}}}, but the dashboard has no filter with that key.")
+                    elif tag not in item["filters"]:
+                        problems.append(f"Card '{key}' uses {{{{{tag}}}}}; add it to the card's \"filters\" with its table.column.")
+                    else:
+                        try:
+                            filters.column(item["filters"][tag])
+                        except filters.FilterError as exc:
+                            problems.append(f"Card '{key}', filter '{tag}': {exc}")
             except OSError:
                 problems.append(f"Card '{key}': the file {key}.sql is missing.")
             except guard.Rejected as exc:

@@ -108,6 +108,54 @@ Other keys are kept for Metabase but the preview ignores them.
 
 `examples/sample` shows every card type with generated numbers.
 
+## Filters
+
+A dashboard may have filters: a date range, or a choice such as a status or a region.
+They work in the preview and become native Metabase filters at Go live.
+
+In `dashboard.json`, beside `cards`:
+
+```json
+"filters": [
+  { "key": "date", "name": "Date", "type": "date", "default": "past30days" },
+  { "key": "status", "name": "Status", "type": "text", "values": "status_list" }
+]
+```
+
+- `type`: `date`, `text` or `number`.
+- `default` for a date: `thisday`, `past1days`, `past7days`, `past30days`, `past90days`,
+  `thismonth`, `past1months`, `thisyear`, or a range `2026-01-01~2026-01-31`. Leave it
+  out for "all time".
+- `values`: the name of a `.sql` file in the folder (here `status_list.sql`) whose first
+  column lists the choices. Keep it cheap: a small table, or `select distinct` on an
+  indexed column with a limit. Without it the user types the value.
+
+A card takes part by using the filter's key in its query and saying which column it is:
+
+```sql
+select (created_at at time zone '<zone>')::date as "Day", count(*) as "Orders"
+from orders
+where {{date}} [[and {{status}}]]
+group by 1 order by 1
+```
+
+```json
+{ "key": "daily_orders", "name": "Orders per day", "display": "line",
+  "filters": { "date": "orders.created_at", "status": "orders.status" }, ... }
+```
+
+- `{{key}}` stands for a whole condition on that column. Never write
+  `created_at >= {{date}}`.
+- Put a filter that may be empty inside `[[ ... ]]` with its `and`; the part is left out
+  when nothing is picked. A `{{key}}` outside brackets becomes `TRUE` when empty.
+- The column's table must appear in the query under its own name, with no alias:
+  Metabase writes the condition as `"schema"."table"."column"`. `from orders o` breaks it.
+- The column must be a real column of that table, as `describe` shows it: `table.column`,
+  or `schema.table.column` outside `public`.
+- A query with `{{...}}` can only be tested by file, after `dashboard.json` names the
+  filters and the card. It runs with the filters' defaults.
+- Add filters only when the user asks for them.
+
 ## SQL
 
 - One SELECT per file.

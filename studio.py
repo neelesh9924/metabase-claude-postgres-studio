@@ -12,7 +12,9 @@
 import argparse
 import sys
 
-from app import config, db, guard, metabase, schema, server, settings, specs
+from pathlib import Path
+
+from app import config, db, filters, guard, metabase, schema, server, settings, specs
 from app.textio import format_result
 
 
@@ -29,7 +31,18 @@ def cmd_q(args):
         print("Give the query in quotes, or a file with -f.")
         return 1
     try:
+        if args.file and filters.tags(sql):
+            # A card query with {{filters}}: run it for the dashboard's default values.
+            spec = specs.load(Path(args.file).resolve().parent.name)
+            card = next((c for c in (spec or {}).get("cards", []) if c["key"] == Path(args.file).stem), None)
+            if card is None:
+                print("This query uses {{filters}}. Add the card and the filters to dashboard.json first.")
+                return 1
+            sql = specs.query(card, spec)
         result = db.run(sql, limit=args.limit, allow_heavy=args.allow_heavy, source="cli")
+    except filters.FilterError as exc:
+        print(f"Filter problem: {exc}")
+        return 1
     except guard.Rejected as exc:
         print(f"Refused: {exc}")
         return 2

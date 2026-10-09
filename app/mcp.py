@@ -3,7 +3,7 @@
 One JSON-RPC message per POST, one JSON reply. Which tools exist depends on the
 running job: a plan may look at the table list but cannot query.
 """
-from . import config, db, guard, schema, specs
+from . import config, db, filters, guard, schema, specs
 from .textio import format_result
 
 FALLBACK_PROTOCOL = "2025-06-18"
@@ -21,7 +21,8 @@ TOOLS = {
     "run_query": {
         "description": "Run one read-only SELECT on the production database and return the first rows. "
                        "Give either sql, or file: the path of a .sql file inside dashboards/. Prefer file once the "
-                       "card's query is written, so the preview reuses the result.",
+                       "card's query is written, so the preview reuses the result. A card query that uses {{filters}} "
+                       "can only be run by file, after dashboard.json names the filters; it runs with their defaults.",
         "inputSchema": {"type": "object", "properties": {
             "sql": {"type": "string"},
             "file": {"type": "string", "description": "For example dashboards/daily_ops/tickets_today.sql"},
@@ -52,10 +53,22 @@ def _query_text(args):
         if not path.is_relative_to(config.DASHBOARDS_DIR.resolve()) or path.suffix != ".sql":
             raise ToolError("file must be a .sql file inside dashboards/.")
         try:
-            return path.read_text(encoding="utf-8")
+            text = path.read_text(encoding="utf-8")
         except OSError:
             raise ToolError(f"{args['file']} does not exist.") from None
+        if not filters.tags(text):
+            return text
+        spec = specs.load(path.parent.name)
+        card = next((c for c in (spec or {}).get("cards", []) if c["key"] == path.stem), None)
+        if card is None:
+            raise ToolError("This query uses {{filters}}. Add the card and the filters to dashboard.json first, then run it by file.")
+        try:
+            return specs.query(card, spec)
+        except filters.FilterError as exc:
+            raise ToolError(f"Filter problem: {exc}") from None
     if args.get("sql"):
+        if filters.tags(str(args["sql"])):
+            raise ToolError("A query with {{filters}} can only be run by file, once dashboard.json names the filters.")
         return str(args["sql"])
     raise ToolError("Give sql or file.")
 

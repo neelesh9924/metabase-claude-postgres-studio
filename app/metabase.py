@@ -7,14 +7,16 @@ checked to really sit in that collection, so a wrong record cannot reach other w
 
 Nothing here runs a query, apart from doctor's two SHOW statements.
 """
+import hashlib
 import json
 import threading
 import time
+import uuid
 import urllib.error
 import urllib.request
 from datetime import datetime
 
-from . import config, db, settings, specs
+from . import config, db, filters, settings, specs
 
 _lock = threading.Lock()
 GRANT_HINT = "In Metabase, open the collection, choose … > Edit permissions, and give the key's group Curate."
@@ -206,7 +208,11 @@ def plan(slug):
     if not cards:
         blockers.append("The dashboard has no card with a query.")
     for card in cards:
-        result = db.cache_get(card["sql"])
+        try:
+            result = db.cache_get(specs.query(card, spec))
+        except filters.FilterError as exc:
+            blockers.append(f'"{card["name"]}": {exc}')
+            continue
         if result is None:
             blockers.append(f'"{card["name"]}" has not drawn yet. Open the dashboard and let every card load.')
             continue
@@ -216,11 +222,17 @@ def plan(slug):
         if (result.get("cost") or 0) > config.MAX_PLAN_COST:
             warnings.append(f'"{card["name"]}" is a heavy query. Everyone who opens the dashboard in Metabase runs it.')
 
+    for entry in spec["filters"]:
+        listing = specs.options_query(spec, entry["key"])
+        if listing and db.cache_get(listing) is None:
+            blockers.append(f'The list for the filter "{entry["name"]}" has not loaded yet. Open the dashboard and let it load.')
     state = specs.published(slug)
     where = None
     live = None
     try:
         where = target()
+        if spec["filters"]:
+            _field_ids(spec, where)
         if state.get("dashboard_id"):
             live, blocker, warning = _live_dashboard(state, where)
             if blocker:
@@ -249,13 +261,66 @@ def plan(slug):
 
 # ---- the publish ----
 
-def _card_body(card, where):
+def _field_ids(spec, where):
+    """Metabase's id for every column a filter points at: {(card key, filter key): id}. Raises MetabaseError."""
+    wanted = {}
+    for card in spec["cards"]:
+        for key in card.get("tags") or []:
+            try:
+                wanted[(card["key"], key)] = filters.column(card["filters"][key])[2]
+            except (KeyError, filters.FilterError) as exc:
+                raise MetabaseError(f'"{card["name"]}", filter "{key}": {exc}') from None
+    if not wanted:
+        return {}
+    listed = _call("GET", f"/api/database/{where['database_id']}/fields") or []
+    known = {(f.get("schema"), f.get("table_name"), f.get("name")): f.get("id") for f in listed}
+    out = {}
+    for pair, path in wanted.items():
+        if path not in known:
+            raise MetabaseError(f"Metabase does not know the column {'.'.join(path)} yet. Let Metabase sync the database, then try again.")
+        out[pair] = known[path]
+    return out
+
+
+def _parameter_id(slug, key):
+    return hashlib.sha256(f"{slug}:{key}".encode()).hexdigest()[:8]
+
+
+def _parameters(spec):
+    """The dashboard's filter widgets, the way Metabase stores them."""
+    out = []
+    for entry in spec["filters"]:
+        widget, section = filters.WIDGETS[entry["type"]]
+        parameter = {"id": _parameter_id(spec["slug"], entry["key"]), "name": entry["name"], "slug": entry["key"],
+                     "type": widget, "sectionId": section}
+        if entry["default"] not in (None, ""):
+            parameter["default"] = entry["default"] if entry["type"] == "date" else [entry["default"]]
+        listing = specs.options_query(spec, entry["key"])
+        found = db.cache_get(listing) if listing else None
+        if found:
+            # The choices as they were when the dashboard was last drawn here; opening the list in Metabase runs nothing.
+            parameter.update({"values_query_type": "list", "values_source_type": "static-list",
+                              "values_source_config": {"values": [row[0] for row in found["rows"] if row[0] is not None]}})
+        out.append(parameter)
+    return out
+
+
+def _card_body(card, where, spec, fields):
+    names = {f["key"]: f for f in spec["filters"]}
+    tags = {}
+    for key in card.get("tags") or []:
+        tags[key] = {
+            "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"{spec['slug']}/{card['key']}/{key}")),
+            "name": key, "display-name": names[key]["name"], "type": "dimension",
+            "dimension": ["field", fields[(card["key"], key)], None],
+            "widget-type": filters.WIDGETS[names[key]["type"]][0],
+        }
     return {
         "name": card["name"],
         "display": card["display"],
         "type": "question",
         "dataset_query": {"database": where["database_id"], "type": "native",
-                          "native": {"query": card["sql"], "template-tags": {}}},
+                          "native": {"query": card["sql"], "template-tags": tags}},
         "visualization_settings": card["viz"],
     }
 
@@ -270,6 +335,11 @@ def _create_card(body, dashboard_id, where):
     return _call("POST", "/api/card", {**body, "collection_id": where["collection_id"]})["id"]
 
 
+def _mappings(spec, card, card_id):
+    return [{"parameter_id": _parameter_id(spec["slug"], key), "card_id": card_id,
+             "target": ["dimension", ["template-tag", key], {"stage-number": 0}]} for key in card.get("tags") or []]
+
+
 def _dashcards(spec, card_ids, current):
     placed = {dc["card_id"]: dc["id"] for dc in current.get("dashcards") or [] if dc.get("card_id")}
     tabs = current.get("tabs") or []
@@ -282,7 +352,8 @@ def _dashcards(spec, card_ids, current):
             entry["dashboard_tab_id"] = tabs[0]["id"]
         if card["sql"]:
             card_id = card_ids[card["key"]]
-            entry.update(id=placed.get(card_id, fresh), card_id=card_id, visualization_settings={})
+            entry.update(id=placed.get(card_id, fresh), card_id=card_id, visualization_settings={},
+                         parameter_mappings=_mappings(spec, card, card_id))
         else:
             entry.update(id=fresh, card_id=None, visualization_settings={
                 "virtual_card": {"name": None, "display": card["display"], "visualization_settings": {},
@@ -312,9 +383,10 @@ def publish(slug):
             _save_state(slug, state)  # saved after every step, so a retry continues instead of duplicating
         dashboard_id = state["dashboard_id"]
 
+        fields = _field_ids(spec, where) if spec["filters"] else {}
         cards = [c for c in spec["cards"] if c["sql"]]
         for card in cards:
-            body = _card_body(card, where)
+            body = _card_body(card, where, spec, fields)
             known = state["cards"].get(card["key"])
             if known and _owned_card(known, dashboard_id, where):
                 _call("PUT", f"/api/card/{known}", body)
@@ -334,6 +406,7 @@ def publish(slug):
         saved = _call("PUT", f"/api/dashboard/{dashboard_id}", {
             "name": spec["name"], "description": spec["description"] or None,
             "dashcards": _dashcards(spec, state["cards"], current),
+            "parameters": _parameters(spec),
             "tabs": [{"id": tab["id"], "name": tab["name"]} for tab in current.get("tabs") or []]})
         state.update({
             "url": f"{config.METABASE_URL.rstrip('/')}/dashboard/{dashboard_id}",

@@ -12,6 +12,7 @@ Usage: python dev/demo_server.py [port]        (default 8790)
 import json
 import math
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -49,6 +50,8 @@ def canned(sql, limit=None, allow_heavy=False, source="cli"):
     text = " ".join(sql.split())
     today = date.today()
     days = [today - timedelta(days=n) for n in range(29, -1, -1)]
+    if "from orders" in text:
+        return canned_orders(text, today)
     if '"Channel"' in text:
         columns = [_column("Day", "date"), _column("Channel", "text"), _column("Tickets", "number")]
         rows = [[d.isoformat(), name, int(base + 40 * math.sin(d.toordinal() / 2 + shift))]
@@ -77,10 +80,69 @@ def canned(sql, limit=None, allow_heavy=False, source="cli"):
             "ran_at": datetime.now().isoformat(timespec="seconds")}
 
 
+STATUSES = {"new": 0.5, "paid": 1.0, "shipped": 0.8, "returned": 0.12}
+
+
+def canned_orders(text, today):
+    """Made-up rows for the filtered demo dashboard; the filters picked change them."""
+    span = re.search(r"interval '(\d+) (day|month|year)'", text)
+    count = min(int(span.group(1)) * {"day": 1, "month": 30, "year": 365}[span.group(2)], 365) if span else (1 if "created_at" in text else 120)
+    picked = re.search(r"\"status\" = '(\w+)'", text)
+    scale = STATUSES.get(picked.group(1), 1.0) if picked else sum(STATUSES.values())
+    days = [today - timedelta(days=n) for n in range(count, 0, -1)]
+    per_day = [int(scale * (310 + 70 * math.sin(d.toordinal() / 4) + 9 * d.weekday())) for d in days]
+    if "select distinct status" in text:
+        columns, rows = [_column("status", "text")], [[s] for s in STATUSES]
+    elif '"Day"' in text:
+        columns, rows = [_column("Day", "date"), _column("Orders", "number")], [[d.isoformat(), n] for d, n in zip(days, per_day)]
+    elif '"Status"' in text:
+        columns = [_column("Status", "text"), _column("Orders", "number")]
+        rows = [[s, int(sum(per_day) * share / scale)] for s, share in STATUSES.items() if not picked or s == picked.group(1)]
+    elif '"Revenue"' in text:
+        columns, rows = [_column("Revenue", "number")], [[sum(per_day) * 742]]
+    else:
+        columns, rows = [_column("Orders", "number")], [[sum(per_day)]]
+    return {"columns": columns, "rows": rows, "row_count": len(rows), "truncated": False, "ms": 14, "cost": 310.0,
+            "ran_at": datetime.now().isoformat(timespec="seconds")}
+
+
+ORDERS = {
+    "dashboard.json": {
+        "name": "Orders",
+        "description": "A made-up shop. Pick a date range and a status; the cards that use them follow.",
+        "filters": [{"key": "date", "name": "Date", "type": "date", "default": "past30days"},
+                    {"key": "status", "name": "Status", "type": "text", "values": "status_list"}],
+        "cards": [
+            {"key": "orders", "name": "Orders", "display": "scalar", "filters": {"date": "orders.created_at", "status": "orders.status"},
+             "row": 0, "col": 0, "size_x": 6, "size_y": 3},
+            {"key": "revenue", "name": "Revenue", "display": "scalar", "filters": {"date": "orders.created_at", "status": "orders.status"},
+             "viz": {"column_settings": {"[\"name\",\"Revenue\"]": {"number_style": "currency", "currency": "USD", "decimals": 0}}},
+             "row": 0, "col": 6, "size_x": 6, "size_y": 3},
+            {"key": "by_status", "name": "Orders by status", "display": "row", "filters": {"date": "orders.created_at"},
+             "viz": {"graph.dimensions": ["Status"], "graph.metrics": ["Orders"]}, "row": 0, "col": 12, "size_x": 12, "size_y": 9},
+            {"key": "per_day", "name": "Orders per day", "display": "line", "filters": {"date": "orders.created_at", "status": "orders.status"},
+             "viz": {"graph.dimensions": ["Day"], "graph.metrics": ["Orders"]}, "row": 3, "col": 0, "size_x": 12, "size_y": 6},
+        ],
+    },
+    "orders.sql": 'select count(*) as "Orders"\nfrom orders\nwhere {{date}} [[and {{status}}]]',
+    "revenue.sql": 'select sum(amount) as "Revenue"\nfrom orders\nwhere {{date}} [[and {{status}}]]',
+    "by_status.sql": 'select status as "Status", count(*) as "Orders"\nfrom orders\nwhere {{date}}\ngroup by 1\norder by 2 desc',
+    "per_day.sql": 'select created_at::date as "Day", count(*) as "Orders"\nfrom orders\nwhere {{date}} [[and {{status}}]]\ngroup by 1\norder by 1',
+    "status_list.sql": "select distinct status\nfrom orders\norder by 1",
+}
+
+
+def write_orders(folder):
+    folder.mkdir(parents=True)
+    for name, content in ORDERS.items():
+        (folder / name).write_text(content if isinstance(content, str) else json.dumps(content, indent=2), encoding="utf-8")
+
+
 def canned_tables():
     now = datetime.now().isoformat(timespec="seconds")
     tables = {name: {"schema": "public", "kind": "table", "rows": rows, "size_bytes": rows * 180, "comment": None,
-                     "columns": [{"name": "id", "type": "bigint", "nullable": False}, {"name": "created_at", "type": "timestamp with time zone", "nullable": False}],
+                     "columns": [{"name": "id", "type": "bigint", "nullable": False}, {"name": "created_at", "type": "timestamp with time zone", "nullable": False},
+                                 {"name": "status", "type": "text", "nullable": False}, {"name": "amount", "type": "numeric(10,2)", "nullable": False}],
                      "indexes": [{"unique": True, "primary": True, "definition": "btree (id)"}, {"unique": False, "primary": False, "definition": "btree (created_at)"}],
                      "foreign_keys": []} for name, rows in TABLES.items()}
     config.SCHEMA_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -93,6 +155,8 @@ def main():
     (TMP / "dashboards").mkdir()
     if not os.environ.get("DEMO_EMPTY"):
         shutil.copytree(ROOT / "examples" / "sample", TMP / "dashboards" / "sample")
+        if not os.environ.get("DEMO_SETUP"):
+            write_orders(TMP / "dashboards" / "orders")
     config.ROOT = TMP
     config.DASHBOARDS_DIR = TMP / "dashboards"
     fake = FakeMetabase()
