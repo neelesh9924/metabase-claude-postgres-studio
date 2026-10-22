@@ -4,7 +4,7 @@ One JSON-RPC message per POST, one JSON reply. Which tools exist depends on the
 running job: a plan may look at the table list but cannot query. Every tool works
 on the job's one database, the one its dashboard belongs to.
 """
-from . import config, db, filters, guard, schema, specs
+from . import config, db, filters, guard, paths, schema, specs
 from .textio import format_result
 
 FALLBACK_PROTOCOL = "2025-06-18"
@@ -50,8 +50,10 @@ def _describe_table(job, args):
 
 def _query_text(args, job):
     if args.get("file"):
-        path = (config.ROOT / str(args["file"])).resolve()
-        if not path.is_relative_to(config.DASHBOARDS_DIR.resolve()) or path.suffix != ".sql":
+        # Checked as text first; a Windows path's backslashes are read as slashes
+        parts = paths.parts_of(str(args["file"]).replace("\\", "/"))
+        path = config.ROOT.joinpath(*parts).resolve() if parts else None
+        if path is None or not path.is_relative_to(config.DASHBOARDS_DIR.resolve()) or path.suffix != ".sql":
             raise ToolError("file must be a .sql file inside dashboards/.")
         try:
             text = path.read_text(encoding="utf-8")

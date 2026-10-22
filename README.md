@@ -141,6 +141,10 @@ move to `data/trash/`, from where they can be put back by hand. Metabase is not 
 
 - Listens on 127.0.0.1 only, and answers only the window the launcher opened: every
   request needs that launch's session cookie, and other sites' requests are refused.
+- A file named by a request (the page's own files need no cookie) or by Claude is
+  checked as text before the disk is touched: a path to another computer
+  (`//host/share`) never reaches Windows, which would connect to it and offer your
+  Windows sign-in.
 
 ## Preparing Metabase
 

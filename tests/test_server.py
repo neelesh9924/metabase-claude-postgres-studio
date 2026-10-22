@@ -2,7 +2,7 @@ import http.client
 import json
 import unittest
 
-from support import StudioCase, serve
+from support import StudioCase, serve, watching_shares
 
 from app import config
 
@@ -73,6 +73,17 @@ class ServerTest(StudioCase):
         self.assertEqual(self.ask("GET", "/static/app.js")[0].status, 200)
         self.assertEqual(self.ask("GET", "/static/../.env")[0].status, 404)
         self.assertEqual(self.ask("GET", "/static/%2e%2e/.env")[0].status, 404)
+        self.assertEqual(self.ask("GET", "/static/vendor/echarts.min.js")[0].status, 200)
+
+    def test_a_share_is_never_opened(self):
+        """No cookie is needed for /static: a page open in the browser could ask for //host/share."""
+        tries = ["/static///attacker.example/share/x", "/static/%2F%2Fattacker.example%2Fshare%2Fx",
+                 "/static/%5C%5Cattacker.example%5Cshare%5Cx", "/static/\\\\attacker.example\\share\\x",
+                 "/static/C:/Windows/win.ini", "/static/app.js::$DATA"]
+        with watching_shares() as tried:
+            for path in tries:
+                self.assertEqual(self.ask("GET", path)[0].status, 404, path)
+        self.assertEqual(tried, [])
 
     def test_a_card_runs_only_from_its_file(self):
         folder = self.tmp / "dashboards" / "ops"

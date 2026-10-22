@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from unittest import mock
@@ -21,6 +22,28 @@ from app import config, db, settings  # noqa: E402
 from app.claude import ClaudeRunner  # noqa: E402
 
 FAKE = [sys.executable, str(Path(__file__).resolve().parent / "fake_claude.py")]
+
+
+@contextmanager
+def watching_shares():
+    """The \\\\host\\share paths the code tries to resolve, test or read, recorded and never let near the
+    disk: Windows would connect to that host to open one, and offer it the user's sign-in."""
+    tried = []
+
+    def guard(name):
+        real = getattr(Path, name)
+
+        def watch(path, *args, **kwargs):
+            if str(path).startswith("\\\\"):
+                tried.append(str(path))
+                if name == "resolve":
+                    return path
+                raise FileNotFoundError(str(path))
+            return real(path, *args, **kwargs)
+        return mock.patch.object(Path, name, watch)
+
+    with guard("resolve"), guard("is_file"), guard("read_text"), guard("read_bytes"):
+        yield tried
 
 
 def free_port():

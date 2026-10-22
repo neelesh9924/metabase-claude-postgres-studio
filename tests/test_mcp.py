@@ -1,7 +1,7 @@
 import unittest
 from unittest import mock
 
-from support import StudioCase
+from support import StudioCase, watching_shares
 
 from app import config, db, mcp
 from app.assistant import ALL_TOOLS, LOOK_TOOLS, Job
@@ -49,10 +49,16 @@ class McpTest(StudioCase):
         text, failed = call(job(ALL_TOOLS), "run_query", file="dashboards/ops/a.sql")
         self.assertFalse(failed, text)
         self.assertEqual(self.queries[0][1], "select 7 as n")
-        for outside in ["../.env", ".env", "dashboards/../.env", "dashboards/ops/a.txt"]:
-            text, failed = call(job(ALL_TOOLS), "run_query", file=outside)
-            self.assertTrue(failed, outside)
-        self.assertEqual(len(self.queries), 1)
+        text, failed = call(job(ALL_TOOLS), "run_query", file="dashboards\\ops\\a.sql")
+        self.assertFalse(failed, "a Windows path to the same file: " + text)
+        outsides = ["../.env", ".env", "dashboards/../.env", "dashboards/ops/a.txt", "//attacker.example/share/a.sql",
+                    "\\\\attacker.example\\share\\a.sql", "C:/dashboards/ops/a.sql", "/dashboards/ops/a.sql"]
+        with watching_shares() as tried:
+            for outside in outsides:
+                text, failed = call(job(ALL_TOOLS), "run_query", file=outside)
+                self.assertTrue(failed, outside)
+        self.assertEqual(tried, [])
+        self.assertEqual(len(self.queries), 2)
 
     def test_writes_never_reach_the_database(self):
         text, failed = call(job(ALL_TOOLS), "run_query", sql="delete from t")

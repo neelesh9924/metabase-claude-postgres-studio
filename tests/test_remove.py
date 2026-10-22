@@ -3,7 +3,7 @@ import json
 import unittest
 from unittest import mock
 
-from support import StudioCase, serve
+from support import StudioCase, serve, watching_shares
 
 from app import config, specs
 
@@ -35,6 +35,15 @@ class RemoveTest(StudioCase):
         self.assertIsNone(specs.remove("ops"))
         for bad in ["../data", "", None, "no/such"]:
             self.assertIsNone(specs.remove(bad))
+
+    def test_a_share_named_as_the_dashboard_is_never_opened(self):
+        serve(self)
+        self.make()
+        with watching_shares() as tried:
+            for slug in ["//attacker.example/share/x", "\\\\attacker.example\\share\\x"]:
+                self.assertEqual(self.post("/api/remove", {"slug": slug}), {"error": "No such dashboard."})
+        self.assertEqual(tried, [])
+        self.assertEqual(specs.slugs(), ["ops"])
 
     def test_from_the_page_and_metabase_is_left_alone(self):
         assistant = serve(self).studio.assistant

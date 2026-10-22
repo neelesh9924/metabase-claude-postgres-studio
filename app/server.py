@@ -21,7 +21,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from . import checks, config, db, filters, guard, mcp, metabase, schema, settings, specs
+from . import checks, config, db, filters, guard, mcp, metabase, paths, schema, settings, specs
 from .assistant import Assistant
 
 COOKIE = "studio_session"
@@ -92,8 +92,10 @@ class Handler(BaseHTTPRequestHandler):
         self._send(status, json.dumps(payload, default=str).encode("utf-8"))
 
     def _static(self, relative):
-        path = (config.STATIC_DIR / relative).resolve()
-        if not path.is_relative_to(config.STATIC_DIR.resolve()) or not path.is_file():
+        # Checked as text first: /static needs no cookie, so any page in the browser may ask for one
+        parts = paths.parts_of(relative)
+        path = config.STATIC_DIR.joinpath(*parts).resolve() if parts else None
+        if path is None or not path.is_relative_to(config.STATIC_DIR.resolve()) or not path.is_file():
             return self._json({"error": "Not found."}, 404)
         content_type = _TYPES.get(path.suffix) or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         if content_type.startswith("text/"):
@@ -292,7 +294,7 @@ class Handler(BaseHTTPRequestHandler):
         job = self.studio.assistant.job
         if job and job.status == "running" and slug in (job.slug, job.key):
             return self._json({"error": "Claude is still working on this dashboard."})
-        showed = bool(specs.shown(slug)) if isinstance(slug, str) else False
+        showed = bool(specs.shown(slug)) if slug in specs.slugs() else False
         try:
             moved = specs.remove(slug)
         except OSError:
