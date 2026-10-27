@@ -167,7 +167,8 @@ def _entry(path, listing):
     if path.is_dir() and paired is not None and _is_draft(paired):
         return None
     if path.is_dir() and (path / "attachments").is_dir():
-        out["note"] = "Files attached to a conversation that an older version cleared. They can only be deleted."
+        out["name"] = f"Files from a cleared conversation about {named}"
+        out["note"] = "An older version of the studio kept them without the conversation. They can only be deleted."
         out["files"] = _count_files(path / "attachments")
     return out
 

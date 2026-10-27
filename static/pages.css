@@ -1,0 +1,52 @@
+/* The Trash page (static/trash.js) and a dashboard's settings dialog (static/versions.js), after app.css.
+   Only app.css's tokens, so light and dark follow it. Rows wrap at 760 px and below. */
+
+/* ───────────── shared ───────────── */
+:is(#trashPage, .dash-settings) .result .grow { flex: 1; min-width: 0; }
+:is(#trashPage, .dash-settings) .result > .btn { flex: none; align-self: center; }
+.chip.live { background: var(--accent-soft); color: var(--accent-ink); }
+
+/* ───────────── trash ───────────── */
+.trash-list { display: grid; margin: 0; padding: 0; list-style: none; }
+.trash-row { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 11px 4px; }
+.trash-row + .trash-row { border-top: 1px solid var(--line); }
+.trash-row > .icon { flex: none; align-self: flex-start; margin-top: 3px; color: var(--text-3); }
+.trash-text { flex: 1; min-width: 0; display: grid; gap: 1px; }
+.trash-text b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.trash-text small { font-size: 12px; color: var(--text-3); overflow-wrap: anywhere; }
+.trash-text .trash-note { color: var(--warn-ink); }
+.trash-actions { flex: none; display: flex; gap: 6px; }
+.trash-empty { padding: 6px 0 2px; }
+.trash-names { margin: 10px 0 0; padding-left: 18px; font-size: 13.5px; }
+.trash-names li { margin-top: 3px; overflow-wrap: anywhere; }
+
+/* ───────────── a dashboard's settings ───────────── */
+.modal.dash-settings { width: min(640px, calc(100vw - 32px)); }
+.modal.dash-settings h2 { margin-bottom: 4px; overflow-wrap: anywhere; }
+.modal.dash-settings h2 + p { margin-top: 0; }
+.versions-zone { display: grid; gap: 8px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+.versions-zone h3 { font: 600 14px var(--display); }
+.modal .versions-zone p { margin-top: 0; }
+.versions { display: grid; gap: 8px; }
+.version-list { display: grid; max-height: 300px; margin: 0; padding: 0 2px; overflow-y: auto; list-style: none; }
+.version { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 8px 2px; }
+.version + .version { border-top: 1px solid var(--line); }
+.version > .icon { flex: none; color: var(--text-3); }
+.version-text { flex: 1; min-width: 0; display: grid; }
+.version-text b { font-size: 13px; font-weight: 600; }
+.version-text small { font-size: 12px; color: var(--text-3); overflow-wrap: anywhere; }
+.version-tags { flex: none; display: flex; gap: 4px; }
+.version-tags:empty { display: none; }
+.danger-zone { display: grid; gap: 10px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+.danger-row { display: flex; align-items: center; gap: 12px; }
+.danger-row > span { flex: 1; min-width: 0; font-size: 13px; color: var(--text-2); }
+
+/* ───────────── small screens ───────────── */
+@media (max-width: 760px) {
+  .trash-row, .version, .danger-row, :is(#trashPage, .dash-settings) .result { flex-wrap: wrap; }
+  .trash-text, .version-text { flex: 1 1 calc(100% - 32px); }
+  .trash-text b { white-space: normal; overflow-wrap: anywhere; }
+  .trash-actions { flex-wrap: wrap; margin-left: 28px; }
+  .version-tags, .version > .btn { margin-left: 25px; }
+  .danger-row > span, :is(#trashPage, .dash-settings) .result .grow { flex-basis: calc(100% - 32px); }
+}
