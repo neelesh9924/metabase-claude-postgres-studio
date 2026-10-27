@@ -7,6 +7,10 @@ after the user approves that plan. A change to an existing dashboard is one run.
 Until it is built, a new dashboard is a draft: a conversation of its own, kept on disk
 until the user removes it. There can be several.
 
+A run that does not finish leaves the page something to offer in its last message: Try
+again (the same request), Carry on (from where it stopped, when it changed files) or
+Build again. A cleared conversation goes to the Trash with its files.
+
 What the user types only ever lands inside the prompt. The skill, the tools and the
 rules are fixed here.
 """
@@ -17,6 +21,7 @@ import json
 import os
 import re
 import secrets
+import sys
 import threading
 import time
 from dataclasses import dataclass, field, replace
@@ -30,6 +35,9 @@ OLD_DRAFT = "_new"   # where the one such conversation was kept before there cou
 MARK_START = "<<<STUDIO_JSON"
 MARK_END = "STUDIO_JSON>>>"
 MAX_TEXT = 4000
+TITLE = 60           # the most characters of a draft's title in the sidebar
+NOTE = 120           # the most characters of a version's note
+NO_DATABASE = "Connect a database in Settings first."
 _KEY = re.compile(r"^[a-z0-9_-]+$")
 _DRAFT_KEY = re.compile(r"^draft-[a-z0-9]{6,32}$")
 
@@ -216,6 +224,33 @@ def new_draft_key():
     return DRAFT + secrets.token_hex(6)
 
 
+def title_of(text):
+    """text on one line, cut at a word with "…" when it is longer than a sidebar title may be."""
+    words = " ".join(str(text or "").split())
+    if len(words) <= TITLE:
+        return words
+    cut = words[:TITLE - 1]
+    space = cut.rfind(" ")
+    if space > TITLE // 3:   # one very long word is cut where it stands
+        cut = cut[:space]
+    return cut.rstrip(" ,;:.-–—") + "…"
+
+
+def _log(message):
+    """A line for data/logs/studio.log, where the launcher sends stderr."""
+    print(f"{datetime.now():%Y-%m-%d %H:%M:%S} {message}", file=sys.stderr, flush=True)
+
+
+def _versions(slug, moment, note=""):
+    """Tells Versions that a run starts ("before") or has ended ("after") on a dashboard's files. A failure is logged,
+    never raised: the run goes on whatever Versions could keep."""
+    try:
+        from . import history
+        history.on_run(slug, moment, note)
+    except Exception as exc:  # noqa: BLE001 (Versions must never stop a run)
+        _log(f"versions {moment} {slug}: {exc!r}")
+
+
 @dataclass
 class Job:
     id: str
@@ -231,17 +266,34 @@ class Job:
     activity: list = field(default_factory=list)
     cancel: threading.Event = field(default_factory=threading.Event)
     database: str | None = None   # the one database this run may look at and query
+    name: str = ""            # what the page calls it: the dashboard's, the plan's or the draft's name
+    request: str = ""         # the id of the user's message it answers
+    words: str = ""           # that message's words
+    plan_id: str = ""         # a build's plan message
+    said: str = ""            # how it ended, in a line: the reply's first, or what stopped it
+    steps: int = 0            # how many lines its activity has had: the page says "Step 7"
+    seconds: int = 0          # how long it took, once it has ended
+    began: float = field(default_factory=time.monotonic)
+    last: float = field(default_factory=time.monotonic)   # when the newest step came
 
     def note(self, text, detail=""):
         entry = {"at": datetime.now().strftime("%H:%M:%S"), "text": str(text)[:200], "detail": str(detail)[:200]}
         if self.activity and self.activity[-1]["text"] == entry["text"] and self.activity[-1]["detail"] == entry["detail"]:
             return
+        self.steps += 1
+        self.last = time.monotonic()
+        entry["n"] = self.steps
         self.activity.append(entry)
         del self.activity[:-80]
 
     def public(self):
+        running = self.status == "running"
+        now = time.monotonic()
         return {"id": self.id, "kind": self.kind, "key": self.key, "slug": self.slug, "status": self.status,
-                "database": self.database, "started": self.started, "queries": self.queries, "activity": self.activity[-40:]}
+                "database": self.database, "started": self.started, "queries": self.queries, "name": self.name,
+                "steps": self.steps, "seconds": int(now - self.began) if running else self.seconds,
+                "quiet": int(now - self.last) if running else 0, "said": self.said,
+                "activity": [dict(entry) for entry in self.activity[-40:]]}
 
 
 class Assistant:
@@ -321,9 +373,13 @@ class Assistant:
         said = next((str(m.get("text") or "") for m in messages if m.get("role") == "user"), "")
         plans = [i for i, m in enumerate(messages) if m.get("role") == "plan" and isinstance(m.get("plan"), dict)]
         name = messages[plans[-1]]["plan"].get("name") if plans else None
-        return {"key": key, "title": str(name or " ".join(said.split())[:60] or "New dashboard"),
+        end = messages[-1]
+        # How the last run ended, when it did not finish: the message that ends one says so.
+        stopped = end.get("role") == "info" and (end.get("offer") or end.get("text") == "Stopped.")
+        return {"key": key, "title": title_of(name or said) or "New dashboard",
                 "database": next((m["database"] for m in messages if m.get("database")), None),
-                "plan": bool(plans) and "user" not in roles[plans[-1]:]}   # True when a plan is there to be built
+                "plan": bool(plans) and "user" not in roles[plans[-1]:],   # True when a plan is there to be built
+                "at": end.get("at"), "last": "failed" if end.get("role") == "error" else "stopped" if stopped else None}
 
     def drafts(self):
         """The conversations that are not a dashboard yet, the latest first. They stay until the user removes them."""
@@ -351,7 +407,7 @@ class Assistant:
         return out
 
     def remove_draft(self, key):
-        """Take a draft out of the sidebar. Its conversation moves to data/trash, to be put back by hand if wanted."""
+        """Take a draft out of the sidebar. Its conversation moves to data/trash, with its files: the Trash can put it back."""
         with self._lock:
             if not _DRAFT_KEY.match(str(key or "")) or not self._path(key).is_file():
                 return "That draft is no longer there."
@@ -396,7 +452,7 @@ class Assistant:
     def _chosen(database):
         """(id of the database a new dashboard is planned on, or the reason it cannot be)."""
         if not config.DATABASES:
-            return None, None  # nothing is set up; Claude's tools will say so
+            return None, NO_DATABASE
         entry = config.database(str(database)) if database else config.DATABASES[0]
         if entry is None:
             return None, "That database is no longer in Settings. Pick another."
@@ -433,15 +489,18 @@ class Assistant:
             if problem:
                 return problem
             said = _files(key, earlier, kept)
-            self._add(key, "user", text, **({"database": database} if database and mode == "new" else {}),
-                      **({"files": kept} if kept else {}))
+            asked = self._add(key, "user", text, **({"database": database} if database and mode == "new" else {}),
+                              **({"files": kept} if kept else {}))
             if mode == "new":
                 job = self._job("plan", key, None, "plan", LOOK_TOOLS, database)
+                job.name = (self._describe(key, earlier + [asked]) or {}).get("title", "")
                 req = self._request(job, plan_prompt(text, earlier, database, said), plan_policy(), config.STUDIO_PLAN_TIMEOUT)
             else:
                 job = self._job("edit", slug, slug, slug, ALL_TOOLS, database)
+                job.name = spec["name"]
                 req = self._request(job, edit_prompt(slug, text, earlier, database, said), write_policy(slug),
                                     config.STUDIO_BUILD_TIMEOUT)
+            job.request, job.words = asked["id"], text
             self._start(job, req, {})
         return None
 
@@ -449,6 +508,8 @@ class Assistant:
         with self._lock:
             if self.busy() or self._closing:
                 return "Claude is still working on the last request."
+            if not config.DATABASES:
+                return NO_DATABASE
             key, messages, found = self._plan(plan_id, draft)
             if found is None:
                 return "That plan is no longer there. Ask again."
@@ -457,8 +518,10 @@ class Assistant:
                 return "The database this plan was made for is no longer in Settings. Ask again."
             plan = dict(found["plan"])
             slug = plan["slug"] = self._free_slug(plan["slug"])
-            request = next((m["text"] for m in reversed(messages) if m["role"] == "user"), plan["name"])
+            asked = next((m for m in reversed(messages) if m["role"] == "user"), {})
+            request = asked.get("text") or plan["name"]
             job = self._job("build", key, slug, slug, ALL_TOOLS, database)
+            job.name, job.request, job.words, job.plan_id = plan["name"], asked.get("id", ""), request, plan_id
             req = self._request(job, build_prompt(slug, plan, request, database, _files(key, messages)), write_policy(slug),
                                 config.STUDIO_BUILD_TIMEOUT)
             self._add(key, "info", f"Building “{plan['name']}”.")
@@ -471,16 +534,45 @@ class Assistant:
             job.cancel.set()
 
     def clear(self, key):
-        """Forget a dashboard's conversation. Its files are not touched. A draft is removed instead."""
+        """Start a dashboard's conversation afresh. What it said moves to the Trash with its attached files, as
+        data/trash/<key>-chat-<stamp>/conversation.json and attachments/, to be put back from there. The dashboard
+        itself is not touched. A draft is removed instead."""
         if _DRAFT_KEY.match(str(key or "")):
             return self.remove_draft(key)
+        if not _KEY.match(str(key or "")):
+            return "That conversation is no longer there."
         with self._lock:
             if self.busy() and self.job.key == key:
                 return "Stop Claude first."
-            if _KEY.match(key or ""):
-                self._save(key, [])
-                self._put_away(key, config.DATA_DIR / "trash" / f"{key}-{datetime.now():%Y%m%d-%H%M%S}")
+            path, files = self._path(key), (config.ATTACH_DIR / key).is_dir()
+            if not files and (not path.is_file() or self._empty(path)):
+                self._forget(key)   # nothing said and nothing attached: nothing for the Trash to keep
+                return None
+            stamp = f"{key}-chat-{datetime.now():%Y%m%d-%H%M%S}"
+            target, n = config.DATA_DIR / "trash" / stamp, 2
+            while target.exists():   # a second clear within the same second
+                target, n = target.with_name(f"{stamp}-{n}"), n + 1
+            try:
+                target.mkdir(parents=True)
+                if path.is_file():
+                    os.replace(path, target / "conversation.json")
+            except OSError:
+                try:
+                    target.rmdir()
+                except OSError:
+                    pass
+                return "The conversation could not be moved just now. Try again."
+            self._put_away(key, target)
+            self.rev += 1
         return None
+
+    @staticmethod
+    def _empty(path):
+        """True for a conversation file that holds no message at all."""
+        try:
+            return json.loads(path.read_text(encoding="utf-8")) == []
+        except (OSError, ValueError):
+            return False
 
     def discard(self, key, folder):
         """A removed dashboard's conversation goes with its files."""
@@ -591,10 +683,40 @@ class Assistant:
         self._worker = threading.Thread(target=self._work, args=(job, req, extra), name="claude", daemon=True)
         self._worker.start()
 
+    @staticmethod
+    def _content(slug):
+        """What a dashboard's own files hold, as a hash (its dashboard.json and queries); None without its folder."""
+        try:
+            return specs.content_hash(slug) if slug else None
+        except OSError:
+            return None
+
+    @staticmethod
+    def _offer(job, touched):
+        """What the message that ends an unfinished run offers the page: Build again for a build, Carry on for a run that
+        changed the dashboard's files, else Try again (the same request)."""
+        mark = {"request": job.request, "touched": touched}
+        if job.kind == "build":
+            return {"offer": "build", "plan": job.plan_id, **mark}
+        return {"offer": "carry" if touched else "again", **mark}
+
+    @staticmethod
+    def _note(job, status):
+        """A version's note: the request's words, or what was built."""
+        if job.kind == "build":
+            return (f"Built: {job.name}" if status == "done" else f"Stopped: Building {job.name}")[:NOTE]
+        words = " ".join(job.words.split())
+        return (words if status == "done" else f"Stopped: {words}")[:NOTE]
+
     def _work(self, job, req, extra):
         def on_event(kind, text, detail):
             job.note(text if kind != "say" else " ".join(text.split())[:160], detail)
 
+        # Versions keeps the files as they were before the run, when there are any.
+        writes = job.kind in ("edit", "build")
+        if writes and (config.DASHBOARDS_DIR / job.slug).is_dir():
+            _versions(job.slug, "before", "")
+        before = self._content(job.slug)
         started = time.monotonic()
         try:
             result = self.runner.run(req, cancel=job.cancel, on_event=on_event)
@@ -605,31 +727,41 @@ class Assistant:
         except Exception as exc:  # one failed run must not take the app down
             outcome, text, error, denied = "error", "", f"Internal error: {exc}", 0
         seconds = int(time.monotonic() - started)
+        touched = self._content(job.slug) != before
         took = f"{seconds // 60} min {seconds % 60} s" if seconds >= 60 else f"{seconds} s"
         meta = took + (f" · {job.queries} {'query' if job.queries == 1 else 'queries'}" if job.queries else "")
         if denied:
             meta += f" · {denied} refused"
-        # The status changes last, so nobody sees "finished" before the reply is saved.
+        # The status changes last, so nobody sees "finished" before the reply and its version are saved.
         with self._lock:
             if outcome == "ok":
-                status = self._finish(job, text, meta, extra)
+                status = self._finish(job, text, meta, extra, touched)
             else:
                 status = "cancelled" if outcome == "cancelled" else "failed"
-                self._add(job.key, "info" if outcome == "cancelled" else "error", error or "Claude did not finish.", meta=meta)
+                job.said = error or "Claude did not finish."
+                self._add(job.key, "info" if outcome == "cancelled" else "error", job.said, meta=meta,
+                          **self._offer(job, touched))
+            if writes and (config.DASHBOARDS_DIR / job.slug).is_dir():
+                _versions(job.slug, "after", self._note(job, status))
+            job.seconds = seconds
             job.status = status
             self.rev += 1
 
-    def _finish(self, job, text, meta, extra):
+    def _finish(self, job, text, meta, extra, touched):
         """Save what a finished run produced. Returns the job's final status."""
+        first = next((line.strip() for line in text.splitlines() if line.strip()), "Done.")[:200]
+        job.said = first
         if job.kind == "plan":
             plan, clean = extract_plan(text)
             if plan is None:
                 self._add(job.key, "claude", clean or text, meta=meta)
-                self._add(job.key, "error", "Claude's reply had no usable plan. Ask again, perhaps with more detail.")
-            else:
-                entry = config.database(job.database) if job.database else None
-                where = {"database": entry["id"], "database_name": entry["name"]} if entry else {}
-                self._add(job.key, "plan", clean, plan=plan, meta=meta, **where)
+                job.said = "Claude's reply had no usable plan. Ask again, perhaps with more detail."
+                self._add(job.key, "error", job.said, **self._offer(job, False))
+                return "failed"
+            entry = config.database(job.database) if job.database else None
+            where = {"database": entry["id"], "database_name": entry["name"]} if entry else {}
+            self._add(job.key, "plan", clean, plan=plan, meta=meta, **where)
+            job.said = f"The plan for “{plan['name']}” is ready. Nothing is read until you press Build."
             return "done"
         if job.kind == "edit":
             # A dashboard stays on the database it was made for, whatever the edit did to the file.
@@ -639,7 +771,8 @@ class Assistant:
             self._add(job.key, "claude", text.strip(), meta=meta)
             return "done"
         if specs.load(job.slug) is None:
-            self._add(job.key, "error", "Claude finished, but the dashboard's dashboard.json is missing.", meta=meta)
+            job.said = "Claude finished, but the dashboard's dashboard.json is missing."
+            self._add(job.key, "error", job.said, meta=meta, **self._offer(job, touched))
             return "failed"
         specs.assign(job.slug, job.database)
         # The draft's conversation becomes the new dashboard's conversation, its files with it.

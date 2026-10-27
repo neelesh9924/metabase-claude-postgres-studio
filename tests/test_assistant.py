@@ -1,12 +1,18 @@
 import base64
 import json
 import os
+import re
+import sys
+import types
 import unittest
+from unittest import mock
 
-from support import StudioCase, pid_alive, read_json, serve
+from support import StudioCase, database, pid_alive, read_json, serve
 from test_attachments import xlsx
 
-from app import attachments, db, specs
+import app
+from app import assistant as assistant_module
+from app import attachments, config, db, specs
 from app.assistant import extract_plan, plan_policy, write_policy
 
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -21,6 +27,8 @@ def sent(name, mime, body):
 class AssistantTest(StudioCase):
     def setUp(self):
         super().setUp()
+        self.databases(database())
+        self.tables("main", ["orders"])
         self.assistant = serve(self).studio.assistant
 
     def settle(self):
@@ -29,6 +37,37 @@ class AssistantTest(StudioCase):
     def draft(self):
         """The conversation of the request that ran last."""
         return self.assistant.thread(self.assistant.job.key)
+
+    def dashboard(self, slug="daily_ops"):
+        """A built dashboard with one card, as a build leaves it."""
+        folder = self.tmp / "dashboards" / slug
+        folder.mkdir(parents=True)
+        (folder / "tickets_today.sql").write_text('select 7 as "Tickets today"\n', encoding="utf-8")
+        (folder / "dashboard.json").write_text(json.dumps({"name": "Daily ops", "database": "main", "cards": [
+            {"key": "tickets_today", "name": "Tickets today", "display": "scalar", "row": 0, "col": 0, "size_x": 6, "size_y": 3}]}),
+            encoding="utf-8")
+        return folder
+
+    def hang(self, *args, **kwargs):
+        """Ask, with the stand-in for Claude left working until stop()."""
+        self.mode("hang")
+        pidfile = self.tmp / "pids.json"
+        pidfile.unlink(missing_ok=True)
+        os.environ["FAKE_PIDFILE"] = str(pidfile)
+        self.addCleanup(os.environ.pop, "FAKE_PIDFILE", None)
+        self.assertIsNone(self.assistant.ask(*args, **kwargs))
+        self.wait(pidfile.exists)
+
+    def versions(self):
+        """A stand-in for app.history (Versions) that records each call, wherever assistant.py looks for it."""
+        calls = []
+        fake = types.ModuleType("app.history")
+        fake.on_run = lambda slug, moment, note: calls.append((slug, moment, note, self.assistant.job.status))
+        for patch in (mock.patch.dict(sys.modules, {"app.history": fake}), mock.patch.object(app, "history", fake, create=True),
+                      mock.patch.object(assistant_module, "history", fake, create=True)):
+            patch.start()
+            self.addCleanup(patch.stop)
+        return fake, calls
 
     def test_plan_then_build_then_change(self):
         # 1. A new dashboard starts with a plan, and planning cannot query.
@@ -98,24 +137,140 @@ class AssistantTest(StudioCase):
         self.assistant.stop()
         self.settle()
         self.assertEqual(self.assistant.job.status, "cancelled")
-        self.assertEqual(self.draft()[-1]["role"], "info")
+        asked, ended = self.draft()
+        self.assertEqual((ended["role"], ended["offer"], ended["request"], ended["touched"]), ("info", "again", asked["id"], False))
         self.assertFalse(pid_alive(pids["parent"]))
         self.assertFalse(pid_alive(pids["child"]))
 
-    def test_a_reply_without_a_plan_offers_nothing_to_build(self):
+    def test_a_reply_without_a_plan_offers_try_again(self):
         self.mode("edit")
         self.assistant.ask("new", None, "Something")
         self.settle()
         self.assertEqual([m["role"] for m in self.draft()], ["user", "claude", "error"])
+        asked, _, ended = self.draft()
+        self.assertEqual((ended["offer"], ended["request"], ended["touched"]), ("again", asked["id"], False))
+        self.assertEqual(self.assistant.job.status, "failed")
+        self.assertIn("no usable plan", self.assistant.job.public()["said"])
         self.assertEqual(self.assistant.build("nope"), "That plan is no longer there. Ask again.")
 
-    def test_clear_forgets_the_conversation_only(self):
+    def test_no_database_no_run(self):
+        self.databases()
+        self.assertEqual(self.assistant.ask("new", None, "Tickets per day"), "Connect a database in Settings first.")
+        self.assertIsNone(self.assistant.job)
+        self.assertEqual(self.assistant.drafts(), [])
+        self.assertFalse(config.THREADS_DIR.exists() and any(config.THREADS_DIR.iterdir()))
+
+    def test_clear_moves_the_conversation_and_its_files_to_the_trash(self):
+        self.dashboard()
         self.mode("edit")
-        self.assistant.ask("new", None, "Something")
+        self.assertIsNone(self.assistant.ask("edit", "daily_ops", "Use the targets", files=[sent("targets.csv", "text/csv", TARGETS)]))
+        self.settle()
+        said = self.assistant.thread("daily_ops")
+        self.assertIsNone(self.assistant.clear("daily_ops"))
+        self.assertFalse((config.THREADS_DIR / "daily_ops.json").exists())
+        self.assertFalse((self.tmp / "attachments" / "daily_ops").exists())
+        [kept] = (self.tmp / "data" / "trash").iterdir()
+        self.assertRegex(kept.name, r"^daily_ops-chat-\d{8}-\d{6}$")
+        self.assertEqual(read_json(kept / "conversation.json"), said)
+        self.assertEqual((kept / "attachments" / "targets.csv").read_bytes(), TARGETS)
+        self.assertEqual(specs.slugs(), ["daily_ops"], "the dashboard itself stays")
+        # A fresh conversation starts empty, and an empty one leaves nothing in the Trash.
+        self.assertEqual(self.assistant.thread("daily_ops"), [])
+        self.assertIsNone(self.assistant.clear("daily_ops"))
+        self.assertEqual(len(list((self.tmp / "data" / "trash").iterdir())), 1)
+        # Not while Claude works on it.
+        self.hang("edit", "daily_ops", "Make it stacked")
+        self.assertEqual(self.assistant.clear("daily_ops"), "Stop Claude first.")
+        self.assistant.stop()
+        self.settle()
+        self.assertIsNotNone(self.assistant.clear("../data"))
+
+    def test_a_stopped_edit_that_changed_a_file_offers_carry_on(self):
+        folder = self.dashboard()
+        self.hang("edit", "daily_ops", "Make it stacked")
+        asked = self.assistant.thread("daily_ops")[-1]
+        (folder / "tickets_today.sql").write_text('select 8 as "Tickets today"\n', encoding="utf-8")   # what Claude wrote
+        self.assistant.stop()
+        self.settle()
+        ended = self.assistant.thread("daily_ops")[-1]
+        self.assertEqual((ended["role"], ended["offer"], ended["touched"], ended["request"]), ("info", "carry", True, asked["id"]))
+        # The same run, with nothing written, offers the same request again.
+        self.hang("edit", "daily_ops", "Make it stacked")
+        self.assistant.stop()
+        self.settle()
+        self.assertEqual((self.assistant.thread("daily_ops")[-1]["offer"], self.assistant.thread("daily_ops")[-1]["touched"]), ("again", False))
+
+    def test_a_failed_build_offers_build_again(self):
+        self.mode("plan")
+        self.assistant.ask("new", None, "Tickets per day")
         self.settle()
         key = self.assistant.job.key
-        self.assertIsNone(self.assistant.clear(key))
-        self.assertEqual((self.assistant.thread(key), self.assistant.drafts()), ([], []))
+        asked, plan = self.assistant.thread(key)
+        self.mode("mute")   # exits without an answer
+        self.assertIsNone(self.assistant.build(plan["id"]))
+        self.settle()
+        self.assertEqual(self.assistant.job.status, "failed")
+        ended = self.assistant.thread(key)[-1]
+        self.assertEqual((ended["role"], ended["offer"], ended["plan"], ended["request"]), ("error", "build", plan["id"], asked["id"]))
+        self.assertEqual([(d["key"], d["last"]) for d in self.assistant.drafts()], [(key, "failed")])
+        # Build again works from the same plan.
+        self.mode("build")
+        self.assertIsNone(self.assistant.build(plan["id"], key))
+        self.settle()
+        self.assertEqual((self.assistant.job.status, specs.slugs()), ("done", ["daily_ops"]))
+
+    def test_the_progress_the_page_shows(self):
+        self.hang("new", None, "Tickets per day")
+        job = self.assistant.job.public()
+        self.assertEqual((job["name"], job["status"]), ("Tickets per day", "running"))
+        self.assertEqual([a["n"] for a in job["activity"]], list(range(1, job["steps"] + 1)))
+        self.assertGreaterEqual(job["steps"], 1)
+        self.assertGreaterEqual(job["quiet"], 0)
+        self.assertGreaterEqual(job["seconds"], 0)
+        self.assistant.stop()
+        self.settle()
+        job = self.assistant.job.public()
+        self.assertEqual((job["quiet"], job["said"]), (0, "Stopped."))
+        self.assertGreaterEqual(job["seconds"], 0)
+        # An edit is named by its dashboard, a build by its plan.
+        self.dashboard()
+        self.mode("edit")
+        self.assistant.ask("edit", "daily_ops", "Make it stacked")
+        self.assertEqual(self.assistant.job.public()["name"], "Daily ops")
+        self.settle()
+        self.assertEqual(self.assistant.job.public()["said"], "Made the chart stacked.")
+
+    def test_versions_hear_of_each_run_on_a_dashboard(self):
+        fake, calls = self.versions()
+        self.mode("plan")
+        self.assistant.ask("new", None, "Tickets per day")
+        self.settle()
+        self.assertEqual(calls, [], "a plan writes nothing")
+        self.mode("build")
+        self.assistant.build(self.draft()[-1]["id"])
+        self.settle()
+        self.assertEqual(calls, [("daily_ops", "after", "Built: Daily ops", "running")])
+        calls.clear()
+        self.mode("edit")
+        self.assistant.ask("edit", "daily_ops", "Make it   stacked")
+        self.settle()
+        self.assertEqual(calls, [("daily_ops", "before", "", "running"), ("daily_ops", "after", "Make it stacked", "running")])
+        calls.clear()
+        self.hang("edit", "daily_ops", "Per week " + "x" * 200)
+        self.assistant.stop()
+        self.settle()
+        self.assertEqual(calls[-1][:2], ("daily_ops", "after"))
+        self.assertTrue(calls[-1][2].startswith("Stopped: Per week xx"))
+        self.assertEqual(len(calls[-1][2]), 120)
+
+        # Versions failing never stops a run.
+        def broken(*_):
+            raise OSError("busy")
+        fake.on_run = broken
+        self.mode("edit")
+        self.assertIsNone(self.assistant.ask("edit", "daily_ops", "Make it stacked"))
+        self.settle()
+        self.assertEqual((self.assistant.job.status, self.assistant.thread("daily_ops")[-1]["text"]), ("done", "Made the chart stacked."))
 
 
 
@@ -125,6 +280,8 @@ class AttachedFilesTest(StudioCase):
 
     def setUp(self):
         super().setUp()
+        self.databases(database())
+        self.tables("main", ["orders"])
         self.assistant = serve(self).studio.assistant
 
     def echo(self, *args, **kwargs):
@@ -183,10 +340,11 @@ class AttachedFilesTest(StudioCase):
         prompt, allow, _ = self.echo("edit", "daily_ops", "Use the targets")
         self.assertIn("- attachments/daily_ops/targets.csv (", prompt)
         self.assertIn("Read(./attachments/daily_ops/**)", allow)
-        # Forgetting the conversation puts its files in the trash.
+        # Clearing the conversation puts its files in the Trash with it.
         self.assertIsNone(self.assistant.clear("daily_ops"))
         self.assertFalse((self.tmp / "attachments" / "daily_ops").exists())
-        self.assertEqual([p.name for p in (self.tmp / "data" / "trash").rglob("targets.csv")], ["targets.csv"])
+        self.assertEqual([p.relative_to(self.tmp / "data" / "trash").parts[1:] for p in (self.tmp / "data" / "trash").rglob("targets.csv")],
+                         [("attachments", "targets.csv")])
 
 
 class PolicyTest(unittest.TestCase):
