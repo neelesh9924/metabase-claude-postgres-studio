@@ -4,18 +4,21 @@ import json
 import os
 import unittest
 
-from support import StudioCase, read_json, serve
+from support import StudioCase, database, read_json, serve
 
 from app import config, specs
 from app.assistant import Assistant
 
 PLAN = {"slug": "leads", "name": "Leads", "description": "", "cards": [{"name": "Leads today", "display": "scalar", "shows": ""}],
         "reads": [], "assumptions": [], "left_out": []}
+LONG = "Orders and revenue today against yesterday, and the last thirty days, per region and per sales channel"
 
 
 class DraftsTest(StudioCase):
     def setUp(self):
         super().setUp()
+        self.databases(database())
+        self.tables("main", ["orders"])
         self.assistant = serve(self).studio.assistant
 
     def settle(self, assistant=None):
@@ -45,8 +48,17 @@ class DraftsTest(StudioCase):
         self.settle()
         # Nothing was built, and nothing is thrown away: another start of the app finds the conversation.
         again = Assistant(config.PORT, self.runner())
-        self.assertEqual([d["key"] for d in again.drafts()], [key])
+        self.assertEqual([(d["key"], d["last"]) for d in again.drafts()], [(key, "stopped")])
         self.assertEqual([m["role"] for m in again.thread(key)], ["user", "info"])
+
+    def test_a_long_first_message_is_cut_at_a_word(self):
+        key = self.say(LONG, mode="edit")   # a reply with no plan in it
+        [listed] = self.assistant.drafts()
+        self.assertEqual(listed["title"], "Orders and revenue today against yesterday, and the last…")
+        self.assertEqual((listed["at"], listed["last"]), (self.assistant.thread(key)[-1]["at"], "failed"))
+        self.say("Per region only", draft=key)   # this time a plan, which names the draft
+        [listed] = self.assistant.drafts()
+        self.assertEqual((listed["title"], listed["last"]), ("Daily ops", None))
 
     def test_several_drafts_each_with_its_own_conversation(self):
         first = self.say("Tickets per day")

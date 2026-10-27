@@ -97,16 +97,27 @@ one-time codes, tokens, PINs and API keys are never shown and never published.
 
 ![The question before personal data is shown](docs/img/personal-data.png)
 
-While Claude works the panel lists each step, and Stop ends it at once. Each card has
-Table, SQL and Refresh tools (move the mouse over the card).
+While Claude works the panel lists each step ("Still on this step" when one takes a
+while), and Stop ends it at once. A request that stopped or failed offers **Try again**
+(the same words), **Carry on** (from where it stopped, when it had already changed the
+dashboard) or **Build again**. The window's title starts with "● Working" during a run;
+one that ends while you are in another window leaves "✓ Ready" or "! Needs you" there
+until you come back. Each card has Table, SQL and Refresh tools (move the mouse over the
+card).
 
 **Go live** publishes the open dashboard to Metabase. It first shows what will happen,
 and nothing is sent until you confirm. A later Go live updates the same dashboard. The
-label beside the title says where a dashboard stands: Draft, Live, "Changes not live",
-or what became of it in Metabase (trashed, deleted, moved).
+label beside the title says where a dashboard stands: "Not live" (built here, not
+published yet), Live, "Changes not live", or what became of it in Metabase (trashed,
+deleted, moved).
 
-**Remove.** The bin button beside Go live takes a dashboard out of the studio. Its files
-move to `data/trash/`, from where they can be put back by hand. Metabase is not touched.
+**Dashboard settings.** The gear beside Go live opens them. **Versions** lists the states
+of the dashboard's files, before and after each of Claude's changes, and **Go back**
+returns to one. Remove is there too.
+
+**The Trash**, beside Settings. A removed dashboard or draft, and a cleared conversation
+(the bin in Ask Claude), go there with their attached files. **Put back**, **Delete
+forever** and **Empty trash** each ask first and name what goes. Metabase is not touched.
 
 ## How it stays safe
 
@@ -174,7 +185,7 @@ in Settings tells you when a key can reach more than you meant.
 |---|---|---|
 | `dashboards/` | Your dashboards: `dashboard.json` and one `.sql` per card | No |
 | `attachments/` | The files you attached in Ask Claude, a folder per conversation | No |
-| `data/` | Settings, saved secrets, the table list, conversations, cached results, logs | No |
+| `data/` | Settings, saved secrets, the table list, conversations, cached results, logs, the Trash | No |
 | `examples/sample/` | The example dashboard a new install starts with | Yes |
 
 The database passwords and the Metabase key are stored encrypted for your Windows user
