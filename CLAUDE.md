@@ -209,4 +209,8 @@ The app's Claude runs must stay as limited as they are: no shell, writes only in
 the one dashboard folder, the machine's own Claude Code login, and none of the saved
 secrets in its environment.
 
-Nothing personal belongs in git: `data/` and `dashboards/` are ignored on purpose.
+The attachments module (`app/attachments.py`, `static/attach.js`, `static/attach.css`) is
+shared with the other studios: never edit it here, and keep every copy identical.
+
+Nothing personal belongs in git: `data/`, `dashboards/` and `attachments/` are ignored
+on purpose.

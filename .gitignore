@@ -8,6 +8,9 @@ data/
 # Your own dashboards. The example the app starts with is in examples/.
 dashboards/
 
+# The files you attach in Ask Claude.
+attachments/
+
 # Never here, wherever a copy turns up.
 .env
 .env.*

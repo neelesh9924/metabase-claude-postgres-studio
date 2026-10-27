@@ -8,6 +8,7 @@
   <link rel="icon" type="image/svg+xml" href="/static/icon.svg">
   <script src="/static/theme.js"></script>
   <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/attach.css">
 </head>
 <body>
   <div class="app" id="app">
@@ -83,9 +84,12 @@
           <select id="askDbSelect" class="input"></select>
         </label>
         <div class="composer">
+          <div id="askFiles" aria-label="Files to send"></div>
           <label class="sr-only" for="askText">Your request</label>
           <textarea id="askText" rows="2"></textarea>
           <div class="composer-foot">
+            <button id="attachBtn" class="btn ghost small square" type="button" aria-label="Attach files"
+                    title="Attach files of any kind. You can also drop them here or paste them."></button>
             <span class="assist-hint" id="askHint"></span>
             <button id="stopBtn" class="btn small danger" type="button" hidden><span>Stop</span></button>
             <button id="sendBtn" class="btn primary small square" type="submit" aria-label="Send" title="Send (Enter)"></button>

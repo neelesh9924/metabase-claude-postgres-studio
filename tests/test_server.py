@@ -2,9 +2,11 @@ import http.client
 import json
 import unittest
 
-from support import StudioCase, serve, watching_shares
+from support import PNG, StudioCase, serve, watching_shares
 
-from app import config
+from app import attachments, config
+
+DRAFT = "draft-0123456789ab"
 
 
 class ServerTest(StudioCase):
@@ -83,6 +85,44 @@ class ServerTest(StudioCase):
         with watching_shares() as tried:
             for path in tries:
                 self.assertEqual(self.ask("GET", path)[0].status, 404, path)
+        self.assertEqual(tried, [])
+
+    def attach(self):
+        """A draft's conversation with a picture and a CSV attached, and a stand-in secret beside the folders."""
+        folder = config.ATTACH_DIR / DRAFT
+        records = [attachments.save(folder, "chart.png", PNG), attachments.save(folder, "targets.csv", b"Region,Target\nNorth,120\n")]
+        (folder / ".hidden.txt").write_text("not for the page", encoding="utf-8")
+        (self.tmp / "data").mkdir(exist_ok=True)
+        (self.tmp / "data" / "settings.json").write_text('{"password": "stand-in"}', encoding="utf-8")
+        config.THREADS_DIR.mkdir(parents=True, exist_ok=True)
+        (config.THREADS_DIR / f"{DRAFT}.json").write_text(json.dumps(
+            [{"id": "m1", "role": "user", "text": "Like these", "at": "2026-10-27T10:00:00", "files": records}]), encoding="utf-8")
+
+    def test_an_attached_file_comes_back_through_its_conversation(self):
+        self.attach()
+        files = json.loads(self.ask("GET", f"/api/thread?key={DRAFT}", Cookie=self.cookie)[1])["messages"][0]["files"]
+        self.assertEqual([(f["href"], f["view"]) for f in files],
+                         [(f"/api/file/{DRAFT}/chart.png", True), (f"/api/file/{DRAFT}/targets.csv", False)])
+        response, data = self.ask("GET", files[0]["href"], Cookie=self.cookie)
+        self.assertEqual((response.status, data, response.getheader("Content-Type")), (200, PNG, "image/png"))
+        self.assertTrue(response.getheader("Content-Disposition").startswith("inline;"))
+        self.assertTrue(response.getheader("Content-Security-Policy").startswith("sandbox;"))
+        self.assertEqual(response.getheader("X-Content-Type-Options"), "nosniff")
+        response, data = self.ask("GET", files[1]["href"], Cookie=self.cookie)
+        self.assertEqual((response.status, response.getheader("Content-Type")), (200, "application/octet-stream"))
+        self.assertTrue(response.getheader("Content-Disposition").startswith("attachment;"))
+        self.assertEqual(self.ask("GET", files[0]["href"])[0].status, 401)
+
+    def test_an_attachment_path_cannot_escape_its_folder(self):
+        self.attach()
+        tries = [f"/api/file/{DRAFT}/../../data/settings.json", f"/api/file/{DRAFT}/%2e%2e/%2e%2e/data/settings.json",
+                 f"/api/file/{DRAFT}/..%2F..%2Fdata%2Fsettings.json", "/api/file/..%2Fdata/settings.json",
+                 "/api/file/../data/settings.json", f"/api/file/{DRAFT}/.hidden.txt", f"/api/file/{DRAFT}",
+                 f"/api/file/{DRAFT}///attacker.example/share/x", f"/api/file/{DRAFT}/%5C%5Cattacker.example%5Cshare%5Cx",
+                 f"/api/file/{DRAFT}/C:/Windows/win.ini", f"/api/file/{DRAFT}/chart.png::$DATA", "/api/file/Draft-X/chart.png"]
+        with watching_shares() as tried:
+            for path in tries:
+                self.assertEqual(self.ask("GET", path, Cookie=self.cookie)[0].status, 404, path)
         self.assertEqual(tried, [])
 
     def test_a_card_runs_only_from_its_file(self):

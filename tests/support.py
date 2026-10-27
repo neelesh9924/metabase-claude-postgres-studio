@@ -1,4 +1,5 @@
 """Shared test setup: a temporary project folder, no database, a stand-in for Claude."""
+import base64
 import json
 import os
 import shutil
@@ -22,6 +23,8 @@ from app import config, db, settings  # noqa: E402
 from app.claude import ClaudeRunner  # noqa: E402
 
 FAKE = [sys.executable, str(Path(__file__).resolve().parent / "fake_claude.py")]
+# A 16 x 12 picture, for the attachments' tests.
+PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAABAAAAAMCAIAAADkharWAAAAGklEQVR4nGM8IafBQApgIkk1w6gG4sBwCFYAiKYBJlhTV74AAAAASUVORK5CYII=")
 
 
 @contextmanager
@@ -83,6 +86,7 @@ class StudioCase(unittest.TestCase):
         patches = [
             mock.patch.object(config, "ROOT", self.tmp),
             mock.patch.object(config, "DASHBOARDS_DIR", self.tmp / "dashboards"),
+            mock.patch.object(config, "ATTACH_DIR", self.tmp / "attachments"),
             mock.patch.object(config, "THREADS_DIR", self.tmp / "data" / "threads"),
             mock.patch.object(config, "CACHE_DIR", self.tmp / ".cache"),
             mock.patch.object(config, "LOG_FILE", self.tmp / "logs" / "queries.log"),

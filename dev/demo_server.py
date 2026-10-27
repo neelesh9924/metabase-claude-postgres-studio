@@ -229,6 +229,7 @@ def main():
                 write_dashboard(TMP / "dashboards" / "customers", people)
     config.ROOT = TMP
     config.DASHBOARDS_DIR = TMP / "dashboards"
+    config.ATTACH_DIR = TMP / "attachments"
     fake = FakeMetabase()
     if os.environ.get("DEMO_NO_COLLECTION"):
         del fake.collections[OURS]

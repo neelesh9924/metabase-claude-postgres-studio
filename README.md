@@ -63,6 +63,14 @@ conversation attached.
 
 **A change.** Open a dashboard and type the change. Changes run directly.
 
+**Attachments.** Give Claude any file with your message: the paperclip, a drop onto the
+panel, or a paste. A CSV, an Excel or Word file, a PDF or a picture of the dashboard you
+want: Claude reads it for that message and the later ones of the same conversation (an
+Excel workbook as one block of CSV rows per sheet). Up to 12 files and 70 MB a message,
+25 MB a file. They are kept in `attachments/`, a folder per conversation, and a run can
+read only its own conversation's. A sent file's chip opens a picture or a PDF and
+downloads anything else.
+
 **Several databases.** Add more under Settings > Databases, each with its own
 connection, schemas and table list. With more than one, the New dashboard screen asks
 which database the dashboard is for. A dashboard stays on that database: Claude sees
@@ -165,6 +173,7 @@ in Settings tells you when a key can reach more than you meant.
 | Folder | Holds | In git |
 |---|---|---|
 | `dashboards/` | Your dashboards: `dashboard.json` and one `.sql` per card | No |
+| `attachments/` | The files you attached in Ask Claude, a folder per conversation | No |
 | `data/` | Settings, saved secrets, the table list, conversations, cached results, logs | No |
 | `examples/sample/` | The example dashboard a new install starts with | Yes |
 

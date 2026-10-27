@@ -19,10 +19,10 @@ import sys
 import webbrowser
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
-from . import checks, config, db, filters, guard, mcp, metabase, paths, schema, settings, specs
-from .assistant import Assistant
+from . import attachments, checks, config, db, filters, guard, mcp, metabase, paths, schema, settings, specs
+from .assistant import _KEY as CONVERSATION, Assistant
 
 COOKIE = "studio_session"
 _TYPES = {".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml"}
@@ -101,6 +101,21 @@ class Handler(BaseHTTPRequestHandler):
         if content_type.startswith("text/"):
             content_type += "; charset=utf-8"
         self._send(200, path.read_bytes(), content_type)
+
+    def _attachment(self, relative):
+        """One of a conversation's attached files, back to the page, served as attachments.headers says."""
+        # Checked as text first, like /static: the conversation, then the file's own parts, never a hidden one (.text/)
+        parts = paths.parts_of(relative)
+        if not parts or len(parts) < 2 or not CONVERSATION.match(parts[0]):
+            return self._json({"error": "Not found."}, 404)
+        folder = config.ATTACH_DIR / parts[0]
+        path = folder.joinpath(*parts[1:]).resolve()
+        record = attachments.describe(folder, "/".join(parts[1:])) if path.is_relative_to(folder.resolve()) else None
+        if record is None:
+            return self._json({"error": "Not found."}, 404)
+        sent = attachments.headers(record)
+        kept = [(name, value) for name, value in sent.items() if name not in ("Content-Type", "X-Content-Type-Options")]
+        self._send(200, path.read_bytes(), sent["Content-Type"], kept)
 
     def _body(self):
         try:
@@ -192,7 +207,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(spec)
         if url.path == "/api/thread":
             key = query.get("key", [""])[0]
-            return self._json({"key": key, "messages": self.studio.assistant.thread(key)})
+            messages = self.studio.assistant.thread(key)
+            for record in (r for m in messages for r in m.get("files") or []):
+                # Where the page opens each one, and whether the browser shows it or downloads it.
+                record.update(href=f"/api/file/{quote(key)}/{quote(record['path'])}", view=record["mime"] in attachments.VIEWABLE)
+            return self._json({"key": key, "messages": messages})
+        if url.path.startswith("/api/file/"):
+            return self._attachment(url.path[len("/api/file/"):])
         if url.path == "/api/settings":
             return self._json({"settings": settings.public(), "setup": setup_state()})
         return self._json({"error": "Not found."}, 404)
@@ -224,7 +245,8 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/settings"):
             return self._settings(path, body)
         if path == "/api/ask":
-            error = assistant.ask(body.get("mode"), body.get("slug"), body.get("text"), body.get("database"), body.get("draft"))
+            error = assistant.ask(body.get("mode"), body.get("slug"), body.get("text"), body.get("database"), body.get("draft"),
+                                  body.get("files"))
         elif path == "/api/build":
             error = assistant.build(body.get("plan"), body.get("draft"))
         elif path == "/api/draft/remove":

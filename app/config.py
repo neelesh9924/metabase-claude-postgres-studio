@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "static"
 EXAMPLES_DIR = ROOT / "examples"
 DASHBOARDS_DIR = ROOT / "dashboards"
+# Files the user attaches in Ask Claude, a folder per conversation. Outside data/ so a run can Read its own folder.
+ATTACH_DIR = ROOT / "attachments"
 # Everything personal lives here and is ignored by git. Tests point it at a temporary folder.
 DATA_DIR = Path(os.environ.get("STUDIO_DATA_DIR") or ROOT / "data")
 SETTINGS_FILE = DATA_DIR / "settings.json"

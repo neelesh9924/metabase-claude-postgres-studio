@@ -31,6 +31,8 @@
   };
   const elements = new Map();
   const charts = new Map();
+  let attach = null;     // static/attach.js, once it has loaded
+  let attached = null;   // the composer's attacher
 
   function h(tag, attrs, ...kids) {
     const el = document.createElement(tag);
@@ -884,7 +886,13 @@
   }
 
   function messageEl(message, latestPlan) {
-    if (message.role === "user") return h("div", { class: "msg user" }, h("div", { class: "bubble" }, message.text));
+    if (message.role === "user") {
+      // A sent file opens (a picture or a PDF) or downloads from the studio, through the link the server gives it.
+      const files = attach && message.files && message.files.length
+        ? h("div", { class: "msg-files" }, message.files.map((f) => attach.chip(f, { href: f.href, view: f.view })))
+        : null;
+      return h("div", { class: "msg user" }, h("div", { class: "bubble" }, message.text), files);
+    }
     if (message.role === "info") return h("div", { class: "msg info" }, message.text);
     const meta = message.meta ? h("div", { class: "msg-meta" }, message.meta) : null;
     if (message.role === "error") return h("div", { class: "msg error" }, icon("alert", 16), h("div", null, message.text, meta));
@@ -976,6 +984,7 @@
     const blocked = running || state.offline || (state.mode === "edit" && !state.slug);
     $("askText").disabled = blocked;
     $("sendBtn").disabled = blocked;
+    $("attachBtn").disabled = blocked;
     $("stopBtn").hidden = !running;
     $("askText").placeholder = state.mode === "new" ? "Describe the dashboard you want…" : "Ask for a change to this dashboard…";
     let hint = state.mode === "new" ? "Plan first. Nothing is read until you press Build." : "Changes run directly.";
@@ -1442,9 +1451,11 @@
       const bytes = crypto.getRandomValues(new Uint8Array(6));
       state.draft = `draft-${[...bytes].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
     }
-    const reply = await act("/api/ask", { mode: state.mode, slug: state.slug, text, database, draft: state.mode === "new" ? state.draft : undefined });
+    const files = attached ? attached.payload() : [];
+    const reply = await act("/api/ask", { mode: state.mode, slug: state.slug, text, database, draft: state.mode === "new" ? state.draft : undefined, files });
     if (reply.ok) {
       $("askText").value = "";
+      if (attached) attached.clear();
       if (state.mode === "new") history.replaceState(null, "", `#~${state.draft}`);
     } else if (fresh) {
       state.draft = null;
@@ -1494,6 +1505,19 @@
   window.addEventListener("hashchange", () => {
     state.mode = "edit";
     poll();
+  });
+
+  // Attachments: the paperclip, files dropped on the panel or pasted, their chips. static/attach.js is shared, byte for
+  // byte, with the other studios; it is a module, so it comes in by import().
+  import("/static/attach.js").then((module) => {
+    attach = module;
+    attached = module.attacher({
+      button: $("attachBtn"), chips: $("askFiles"), zones: [$("assist")], paste: [$("askForm")],
+      blocked: () => busy() || state.offline || (state.mode === "edit" && !state.slug),
+    });
+    renderMessages();
+  }).catch(() => {
+    $("attachBtn").hidden = true;
   });
   poll();
 })();
