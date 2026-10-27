@@ -127,6 +127,11 @@ of Ask Claude), go there. **Put back** returns one as it was; **Delete forever**
 **Keyboard and screen readers.** The focus stays where it is while the page updates,
 dialogs are named by their heading, and Claude's steps, removals and results are read
 out. On a laptop (900 to 1180 px wide) Ask Claude opens as a drawer from its button.
+**Ctrl+K**, or the search button beside light and dark, jumps to a dashboard, a draft, a
+page or an action. Alt+N starts a new dashboard, Ctrl+/ goes to Ask Claude, Alt+↑ and
+Alt+↓ step through the dashboards, and **?** lists every key; the first Tab reaches links
+that skip to the dashboard or to Ask Claude. Drag the Ask Claude panel's left edge to make
+it wider or narrower, or focus it and use the arrow keys, Home and End; the width is kept.
 
 ## How it stays safe
 
