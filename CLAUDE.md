@@ -222,8 +222,12 @@ The page: `static/app.js` is the shell and hands its helpers (the `ui` object: d
 `announce`, `whileBusy`, `focusFirst`, `drawIfChanged`, `go`, `ask`, `build`, `retitle`) to
 `settings.js`, `trash.js` (the Trash page), `versions.js` (the gear's Dashboard settings) and
 `progress.js` (Claude's steps, Try again and Carry on, the title marks), which load before
-it. Styles: `app.css`, then `pages.css`. Keep the focus where it is on every redraw, name
-each dialog by its heading, and never use `disabled` on a busy button (`whileBusy`).
+it. `palette.js` (Ctrl+K, the keys, the skip links) gets `ui` through
+`studioPalette.start(ui)` and reads what it offers from the page; `resize.js` (the Ask
+Claude panel's edge, `--assist-w`) starts itself. Styles: `app.css`, then `pages.css`, and
+`keys.css` (the palette, the keys and the panel's edge) last. Keep the focus where it is
+on every redraw, name each dialog by its heading, and never use `disabled` on a busy
+button (`whileBusy`).
 `app/trash.py` and `app/history.py` hold the Trash and the Versions on the server.
 
 Nothing personal belongs in git: `data/`, `dashboards/` and `attachments/` are ignored
@@ -242,3 +246,5 @@ on purpose.
 - Focus kept through polls, a screen-reader log and announcements, dialogs named by their
   heading, AA greys and focus rings, a drawer for Ask Claude on a laptop, cards in reading
   order on a phone. One studio per port.
+- The keys of the owner's other studios: Ctrl+K's palette, Alt+N, Ctrl+/, Alt+↑ / Alt+↓, ?
+  and two skip links; the Ask Claude panel's edge, dragged or moved with the arrow keys.
