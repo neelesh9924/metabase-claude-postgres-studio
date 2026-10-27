@@ -101,6 +101,22 @@ class HistoryTest(StudioCase):
         notes = [v["note"] for v in history.versions("ops")]
         self.assertEqual(notes, ["Change 4", "Change 3", "Change 2", "As first opened here"])
 
+    def test_a_version_that_names_other_files_is_never_used(self):
+        """Only dashboard.json and queries come back from a version: never Go live's record, never a path out."""
+        self.make()
+        history.catch_up("ops")
+        self.publish()
+        published = self.read("metabase.json")
+        for n, extra in enumerate([{"metabase.json": "{}"}, {"../escape.sql": "select 1"}, {"sub/x.sql": "select 1"}]):
+            version = {"id": f"20990101-00000{n}-000000-abcd", "at": "2099-01-01T00:00:00", "by": "you", "note": "odd",
+                       "files": {"dashboard.json": self.read("dashboard.json"), **extra}}
+            (specs.history_dir("ops") / f"{version['id']}.json").write_text(json.dumps(version), encoding="utf-8")
+            with self.assertRaises(history.HistoryError):
+                history.go_back("ops", version["id"])
+        self.assertEqual([v["note"] for v in history.listing("ops")], ["As first opened here"])
+        self.assertEqual(self.read("metabase.json"), published)
+        self.assertFalse((config.DASHBOARDS_DIR / "escape.sql").exists())
+
     def test_a_label_reads_as_the_user_reads_a_time(self):
         self.assertEqual(history.label("2026-10-27T15:49:12"), "27 Oct, 3:49 pm")
         self.assertEqual(history.label("2026-10-07T00:05:00"), "7 Oct, 12:05 am")
