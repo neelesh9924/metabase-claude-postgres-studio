@@ -27,8 +27,11 @@
     // A new dashboard's conversation is a draft. draft is the open one's key; null on the New dashboard screen means not begun.
     // listed is the open draft once the server's list has had it.
     draft: null, drafts: [], listed: null,
-    mode: "edit", assist: { rev: -1, key: null, job: null, messages: [], followed: undefined, flash: "", again: false },
+    mode: "edit", assist: { rev: -1, key: null, job: null, messages: [], followed: undefined, again: false },
+    // answered: the studio has answered once (until then its buttons wait); lastSlug: the dashboard to come back to.
+    answered: false, lastSlug: null,
   };
+  const APP = "Metabase Claude Studio";
   const elements = new Map();
   const charts = new Map();
   let attach = null;     // static/attach.js, once it has loaded
@@ -68,8 +71,15 @@
     alert: ["M12 4l9 16H3z", "M12 10v4", "M12 17.2v.3"],
     check: ["M5 12.5l4.5 4.5L19 7.5"],
     settings: ["M4 7h9", "M19 7h1", "M4 17h3", "M13 17h7", "M16 5a2 2 0 1 0 0 4 2 2 0 0 0 0-4z", "M10 15a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"],
+    gear: ["M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z", "M19.4 13.5l1.6 1-2 3.4-1.8-.6a7 7 0 0 1-2.4 1.4L14.4 21h-4l-.4-2.3a7 7 0 0 1-2.4-1.4l-1.8.6-2-3.4 1.6-1a7 7 0 0 1 0-3l-1.6-1 2-3.4 1.8.6A7 7 0 0 1 10 5.3L10.4 3h4l.4 2.3a7 7 0 0 1 2.4 1.4l1.8-.6 2 3.4-1.6 1a7 7 0 0 1 0 3z"],
     moon: ["M20 14.5A8 8 0 0 1 9.5 4a7 7 0 1 0 10.5 10.5z"],
     sun: ["M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z", "M12 3v2", "M12 19v2", "M3 12h2", "M19 12h2", "M5.6 5.6L7 7", "M17 17l1.4 1.4", "M5.6 18.4L7 17", "M17 7l1.4-1.4"],
+    copy: ["M9 9h11v11H9z", "M5 15H4V4h11v1"],
+    chat: ["M20.5 11.5a8.5 8.5 0 0 1-12.3 7.6L3.5 20.5l1.4-4.5A8.5 8.5 0 1 1 20.5 11.5z"],
+    file: ["M6 3h8l4 4v14H6z", "M14 3v4h4", "M9 12h6", "M9 16h6"],
+    search: ["M10.5 4a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13z", "M15.5 15.5L20 20"],
+    x: ["M6 6l12 12", "M18 6L6 18"],
+    history: ["M3.5 12a8.5 8.5 0 1 0 2.6-6.1", "M3 4v4.5h4.5", "M12 8v4.5l3 2"],
   };
 
   function icon(name, size = 16) {
@@ -209,6 +219,12 @@
     };
   }
 
+  // A chart's words for a screen reader: ECharts describes the chart and its data, under the card's name (the first
+  // title, never drawn).
+  function spoken(card) {
+    return { aria: { enabled: true }, title: { text: card.name || "", show: false } };
+  }
+
   function mount(key, box, option) {
     const chart = echarts.init(box);
     chart.setOption(option);
@@ -341,6 +357,7 @@
     const many = built.length > 1;
     return {
       animation: false,
+      ...spoken(card),
       textStyle: { fontFamily: FONT },
       grid: {
         left: valueAxis.name && !horizontal ? 24 : 6,
@@ -388,9 +405,10 @@
     const centre = wide ? "32%" : "50%";
     return {
       animation: false,
+      aria: spoken(card).aria,
       color: SERIES,
       textStyle: { fontFamily: FONT },
-      title: {
+      title: [spoken(card).title, {
         text: fmtNumber(total, settings, Math.abs(total) >= 1e6),
         subtext: "Total",
         left: centre,
@@ -399,7 +417,7 @@
         itemGap: 2,
         textStyle: { color: INK, fontSize: 18, fontWeight: 700 },
         subtextStyle: { color: INK_SOFT, fontSize: 11 },
-      },
+      }],
       legend: wide
         ? {
             type: "scroll",
@@ -470,10 +488,173 @@
     return wrap;
   }
 
+  // ---------- helpers every part of the page shares (as in the owner's other studios) ----------
+
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+  function setText(el, text) {
+    if (el.textContent !== text) el.textContent = text;
+  }
+
+  // Says text once to a screen reader: politely through #announce (role=status), or at once through #alarm (role=alert)
+  // when urgent. The region is emptied first and the words put in on the next frame, so the same words twice are said
+  // twice. While the dialog is open the rest of the page is inert: meanwhile the region speaks from inside the dialog,
+  // and goes back to the end of <body> when it closes.
+  const regions = {};
+  const speaking = new Map();
+  function announce(text, { urgent = false } = {}) {
+    const id = urgent ? "alarm" : "announce";
+    const region = regions[id] || (regions[id] = $(id));
+    if (!region || !text) return;
+    const dialog = $("liveDialog");
+    const home = dialog.open ? dialog : document.body;
+    if (region.parentNode !== home) {
+      home.append(region);
+      if (home === dialog) dialog.addEventListener("close", () => document.body.append(region), { once: true });
+    }
+    cancelAnimationFrame(speaking.get(region));
+    region.textContent = "";
+    speaking.set(region, requestAnimationFrame(() => {
+      speaking.delete(region);
+      region.textContent = text;
+    }));
+  }
+
+  // Runs work() with the button busy: aria-disabled and aria-busy while it runs and its clicks ignored, but never the
+  // disabled property, so the button keeps the focus and a screen reader stays on it. Returns work()'s result.
+  async function whileBusy(button, work) {
+    const before = ["aria-disabled", "aria-busy"].map((name) => [name, button.getAttribute(name)]);
+    const ignore = (event) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    button.addEventListener("click", ignore, true);
+    button.setAttribute("aria-disabled", "true");
+    button.setAttribute("aria-busy", "true");
+    try {
+      return await work();
+    } finally {
+      button.removeEventListener("click", ignore, true);
+      for (const [name, value] of before) {
+        if (value === null) button.removeAttribute(name);
+        else button.setAttribute(name, value);
+      }
+    }
+  }
+
+  const isOff = (button) => button.getAttribute("aria-disabled") === "true";
+
+  // Moves the focus to the first of the candidates (elements, or selectors for one) that is in the page, shown and not
+  // disabled; one that can't take the focus by itself is given tabindex="-1" first. Returns the element, or null.
+  function focusFirst(...candidates) {
+    for (const candidate of candidates.flat()) {
+      const el = typeof candidate === "string" ? document.querySelector(candidate) : candidate;
+      if (!(el instanceof Element) || !el.isConnected || !el.getClientRects().length || getComputedStyle(el).visibility === "hidden"
+        || el.matches(":disabled")) continue;
+      el.focus();
+      if (document.activeElement === el) return el;
+      if (el.hasAttribute("tabindex")) continue;
+      el.setAttribute("tabindex", "-1");
+      el.focus();
+      if (document.activeElement === el) return el;
+      el.removeAttribute("tabindex");
+    }
+    return null;
+  }
+
+  // Draws into box only when key (what it would show, as a string) differs from the key last drawn there.
+  const drawn = new WeakMap();
+  function drawIfChanged(box, key, draw) {
+    if (drawn.has(box) && drawn.get(box) === key) return false;
+    draw();
+    drawn.set(box, key);
+    return true;
+  }
+
+  // The element with this data-key in box, for giving the focus back after box is drawn again.
+  const keyed = (box, key) => (key ? [...box.querySelectorAll("[data-key]")].find((el) => el.dataset.key === key) || null : null);
+  const focusedKey = (box) => (box.contains(document.activeElement) ? document.activeElement.dataset.key || null : null);
+
+  // The window's title: what a run says of itself (studioProgress.mark(): "", or Working / Ready / Needs you), then base.
+  let titleBase = APP;
+  function setTitle(base) {
+    titleBase = base;
+    retitle();
+  }
+
+  function retitle() {
+    let mark = "";
+    try {
+      mark = (window.studioProgress && window.studioProgress.mark()) || "";
+    } catch (error) {
+      console.error(error);
+    }
+    const text = `${mark}${titleBase}`;
+    if (document.title !== text) document.title = text;
+  }
+
+  // ---------- the dialog ----------
+
+  // Each opening of the dialog takes a token, and closing it gives the token up: an answer that comes late is shown only
+  // while its own opening is still there.
+  let dialogToken = 0;
+  const ownsDialog = (token) => $("liveDialog").open && token === dialogToken;
+  $("liveDialog").addEventListener("close", () => {
+    dialogToken += 1;
+  });
+
+  function liveList(title, items, kind) {
+    return items.length ? h("div", { class: `live-box ${kind}` }, h("strong", null, title), h("ul", null, items.map((text) => h("li", null, text)))) : null;
+  }
+
+  function liveFooter(...buttons) {
+    return h("div", { class: "live-foot" }, buttons);
+  }
+
+  function closeDialog() {
+    if ($("liveDialog").open) $("liveDialog").close();
+  }
+
+  function closeButton(label) {
+    return h("button", { class: "btn", type: "button", onclick: closeDialog }, label);
+  }
+
+  function showDialog(...content) {
+    const dialog = $("liveDialog");
+    const spoken = [...dialog.querySelectorAll(":scope > #announce, :scope > #alarm")];   // a region speaking from here stays
+    dialog.className = "modal";
+    dialog.replaceChildren(...content.flat().filter(Boolean), ...spoken);
+    nameDialog();
+    if (!dialog.open) {
+      dialogToken += 1;
+      dialog.showModal();
+    }
+    focusFirst(dialog.querySelector("input, select, textarea, button"));
+    return dialogToken;
+  }
+
+  // A screen reader names the dialog by its first heading, and describes it by the paragraph right after that heading
+  // (the question a confirmation asks, the word while something is under way); done again whenever its content changes.
+  function nameDialog() {
+    const dialog = $("liveDialog");
+    const title = dialog.querySelector("h2");
+    const said = title && title.nextElementSibling && title.nextElementSibling.tagName === "P" ? title.nextElementSibling : null;
+    for (const [attribute, el, id] of [["aria-labelledby", title, "dialog-title"], ["aria-describedby", said, "dialog-said"]]) {
+      if (!el) {
+        dialog.removeAttribute(attribute);
+        continue;
+      }
+      if (!el.id) el.id = id;
+      dialog.setAttribute(attribute, el.id);
+    }
+  }
+  new MutationObserver(nameDialog).observe($("liveDialog"), { childList: true });
+
   // ---------- cards ----------
 
   function toolButton(name, label, pressed, title, onclick) {
-    const attrs = { class: "tool", type: "button", "aria-label": label, "aria-pressed": pressed === null ? null : String(pressed), title, onclick };
+    const attrs = { class: "tool", type: "button", "aria-label": label, "aria-pressed": pressed === null ? null : String(pressed), title,
+      "data-tool": name, "aria-disabled": state.offline || !state.answered ? "true" : null, onclick: (event) => !isOff(event.currentTarget) && onclick() };
     return h("button", attrs, icon(name, 15));
   }
 
@@ -482,10 +663,18 @@
     renderCard(key);
   }
 
+  // The focus on one of a card's buttons comes back to the same one when the card is drawn again: the same tool, else
+  // the flag that took its place, else the card's Refresh.
+  function focusTool(el, tool) {
+    const at = (name) => el.querySelector(`[data-tool="${name}"]`);
+    return focusFirst(at(tool), at(tool === "show" ? "hide" : "show"), at("refresh"));
+  }
+
   function renderCard(key) {
     const card = state.spec && state.spec.cards.find((c) => c.key === key);
     const el = elements.get(key);
     if (!card || !el) return;
+    const focused = el.contains(document.activeElement) ? document.activeElement.dataset.tool || null : null;
     const old = charts.get(key);
     if (old) {
       old.dispose();
@@ -495,7 +684,13 @@
     el.className = `card d-${card.display}`;
     if (card.display === "heading") return void el.append(h("h2", { class: "heading" }, card.text));
     if (card.display === "text") return void el.append(h("div", { class: "text" }, card.text));
+    drawCard(card, el);
+    renderRefresh();
+    if (focused) focusTool(el, focused);
+  }
 
+  function drawCard(card, el) {
+    const key = card.key;
     const entry = state.cards[key] || {};
     const waiting = entry.loading || entry.queued;
     const result = entry.result || (waiting ? entry.stale : null);
@@ -508,19 +703,29 @@
     const revealed = columns.filter((c) => c.revealed).map((c) => c.name);
     const flags = [
       personal.length
-        ? h("button", { class: "flag", type: "button", title: `Hidden: ${personal.join(", ")}. Press to choose whether to show the values.`,
+        ? h("button", { class: "flag", type: "button", "data-tool": "show", title: `Hidden: ${personal.join(", ")}. Press to choose whether to show the values.`,
             onclick: () => askShow(card, personal) }, "Personal data hidden · Show")
         : null,
       revealed.length
-        ? h("button", { class: "flag shown", type: "button", title: `Shown because you said so: ${revealed.join(", ")}. Press to hide the values again.`,
+        ? h("button", { class: "flag shown", type: "button", "data-tool": "hide", title: `Shown because you said so: ${revealed.join(", ")}. Press to hide the values again.`,
             onclick: () => setShown(card, revealed, false) }, "Personal data shown · Hide")
         : null,
       secret.length
         ? h("span", { class: "flag", title: `Hidden: ${secret.join(", ")}. Passwords, codes and tokens are never shown. Leave these columns out.` }, "Secret hidden")
         : null,
     ];
-
-    if (!isScalar || view !== "chart" || !result || flags.some(Boolean)) {
+    const failed = entry.error && !waiting;
+    const heavy = entry.heavy && !waiting;
+    // A number says its card's name under it; in every other state (failed, heavy, loading, empty) the head says it.
+    const ownTitle = isScalar && view === "chart" && result && result.rows.length && !failed && !heavy && !flags.some(Boolean);
+    if (isScalar || card.display === "smartscalar") {
+      el.setAttribute("role", "group");
+      el.setAttribute("aria-label", card.name);
+    } else {
+      el.removeAttribute("role");
+      el.removeAttribute("aria-label");
+    }
+    if (!ownTitle) {
       el.append(
         h(
           "header",
@@ -544,10 +749,10 @@
     const body = h("div", { class: "card-body" });
     el.append(body);
     if (view === "sql") return void body.append(h("pre", { class: "sql" }, card.sql || "The SQL file is missing."));
-    if (entry.error && !waiting) {
+    if (failed) {
       return void body.append(h("div", { class: "problem" }, h("strong", null, "The query failed"), h("pre", null, entry.error)));
     }
-    if (entry.heavy && !waiting) {
+    if (heavy) {
       const cost = Math.round(entry.heavy.cost).toLocaleString("en-US");
       const limit = Math.round(entry.heavy.limit).toLocaleString("en-US");
       return void body.append(
@@ -556,7 +761,7 @@
           { class: "problem" },
           h("strong", null, "Not run: this query looks heavy"),
           h("span", null, `Estimated cost ${cost}, limit ${limit}.`),
-          h("button", { class: "btn small", type: "button", onclick: () => enqueue(key, true, true) }, "Run anyway")
+          h("button", { class: "btn small", type: "button", "data-tool": "anyway", onclick: () => enqueue(key, true, true) }, "Run anyway")
         )
       );
     }
@@ -570,7 +775,8 @@
     if (view === "table" || card.display === "table") return void body.append(tableView(card, result));
     if (isScalar || card.display === "smartscalar") return void body.append(scalarView(card, result));
 
-    const box = h("div", { class: "chart" });
+    // A picture to a screen reader, named by its card: ECharts puts its own description of the chart and its data here.
+    const box = h("div", { class: "chart", role: "img", "aria-label": card.name });
     body.append(box);
     const option = card.display === "pie" ? pieOption(card, result, box.clientWidth) : cartesianOption(card, result);
     if (!option) {
@@ -580,35 +786,51 @@
     mount(key, box, option);
   }
 
+  const pending = () => Object.values(state.cards).some((entry) => entry.queued || entry.loading);
+
+  // Refresh data waits while any card's query waits or runs, and says so: pressed again it would only queue them twice.
+  function renderRefresh() {
+    const button = $("refreshAll");
+    const running = pending();
+    setText(button.querySelector(".label"), running ? "Running…" : "Refresh data");
+    button.setAttribute("aria-disabled", String(running || state.offline || !state.answered));
+    if (running) button.setAttribute("aria-busy", "true");
+    else button.removeAttribute("aria-busy");
+  }
+
+  // One query at a time, in turn. A card already waiting or running is not asked for again: a forced run only upgrades a
+  // waiting one that wasn't forced.
   function enqueue(key, force, allowHeavy) {
     const entry = state.cards[key];
-    if (!entry) return;
+    if (!entry || entry.loading) return;
+    if (entry.queued) {
+      if (force) entry.force = true;
+      if (allowHeavy) entry.allowHeavy = true;
+      return;
+    }
+    Object.assign(entry, { queued: true, force: !!force, allowHeavy: !!allowHeavy });
     const gen = state.gen;
     const slug = state.slug;
-    entry.queued = true;
     renderCard(key);
     state.chain = state.chain.then(async () => {
       const now = state.cards[key];
       if (state.gen !== gen || state.slug !== slug || !now) return;
       now.queued = false;
-      if (!force && (now.result || now.error || now.heavy)) return void renderCard(key);
+      if (!now.force && (now.result || now.error || now.heavy)) return void renderCard(key);
       now.loading = true;
       renderCard(key);
-      let reply;
-      try {
-        reply = await api("/api/run", { slug, key, allow_heavy: !!allowHeavy, values: state.picked[slug] });
-      } catch {
-        reply = { error: "The studio server did not answer." };
-      }
+      const reply = await post("/api/run", { slug, key, allow_heavy: !!now.allowHeavy, values: state.picked[slug] });
       const target = state.slug === slug ? state.cards[key] : null;
       if (!target) return;
-      target.loading = false;
+      Object.assign(target, { loading: false, force: false, allowHeavy: false });
       if (reply.result && reply.sql_hash === target.hash) {
         Object.assign(target, { result: reply.result, error: null, heavy: null, stale: null });
       } else if (reply.heavy) {
         Object.assign(target, { heavy: reply.heavy, error: null });
       } else if (!reply.result) {
         Object.assign(target, { error: reply.error || "Unknown error.", heavy: null });
+        const card = state.spec && state.spec.cards.find((c) => c.key === key);
+        announce(`${card ? card.name : "A card"}: the query failed.`);
       }
       renderCard(key);
     });
@@ -631,13 +853,25 @@
     notice.append(icon("alert", 17), h("div", null, h("strong", null, title), list));
   }
 
+  // A word at the top of the dashboard page about what just happened (a removal with Put back, a Go live that ended
+  // after its window was closed); kept until the next one, or until the owner opens another dashboard.
+  function flash(words, action, kind = "info") {
+    const box = $("flash");
+    box.hidden = !words;
+    if (!words) return void box.replaceChildren();
+    box.className = `notice ${kind}`;
+    box.replaceChildren(icon(kind === "bad" ? "alert" : "check", 17), h("div", { class: "grow" }, words), action || null);
+  }
+
   function severalDatabases() {
     return state.databases.length > 1;
   }
 
-  // Where a dashboard stands: only here, live in Metabase, or live but no longer matching.
+  const noDatabase = () => !state.databases.some((d) => d.ready);
+
+  // Where a dashboard stands: only here (built, not published), live in Metabase, or live but no longer matching.
   function statusOf(d) {
-    if (!d.live) return { text: "Draft", kind: "" };
+    if (!d.live) return { text: "Not live", kind: "" };
     if (d.metabase === "trashed") return { text: "In Metabase’s trash", kind: "bad" };
     if (d.metabase === "gone") return { text: "Deleted in Metabase", kind: "bad" };
     if (d.metabase === "moved") return { text: "Moved in Metabase", kind: "warn" };
@@ -645,19 +879,39 @@
     return { text: "Live", kind: "ok" };
   }
 
+  // The top bar's buttons wait until the studio answers, and while it does not.
+  function renderActions() {
+    const off = state.offline || !state.answered;
+    for (const id of ["goLive", "dashSettings"]) {
+      if ($(id).getAttribute("aria-busy") !== "true") $(id).setAttribute("aria-disabled", String(off));
+    }
+    renderRefresh();
+  }
+
+  function clearStatus() {
+    drawIfChanged($("status"), "", () => $("status").replaceChildren());
+  }
+
   function renderTop() {
     const spec = state.spec;
     const status = statusOf(spec);
-    const chips = [h("span", { class: `chip ${status.kind}` }, h("i", { class: "dot" }), status.text)];
-    if (severalDatabases() && spec.database_name) {
-      chips.push(h("span", { class: "chip", title: "The database this dashboard reads" }, icon("table", 13), spec.database_name));
-    }
-    $("status").replaceChildren(...chips);
+    const database = severalDatabases() && spec.database_name ? spec.database_name : "";
+    // Changed in place, only when it changes: a screen reader hears where the dashboard stands when that is news.
+    drawIfChanged($("status"), JSON.stringify([status, database]), () => {
+      const chips = [h("span", { class: `chip ${status.kind}` }, h("i", { class: "dot", "aria-hidden": "true" }), status.text)];
+      if (database) chips.push(h("span", { class: "chip", title: "The database this dashboard reads" }, icon("table", 13), database));
+      $("status").replaceChildren(...chips);
+    });
     $("openLive").hidden = !spec.live || spec.metabase === "trashed" || spec.metabase === "gone";
-    $("goLive").disabled = false;
+    renderActions();
   }
 
   function renderDashboard() {
+    const grid = $("grid");
+    // The focus on a card's button stays on the same button of the same card, drawn afresh.
+    const was = grid.contains(document.activeElement) ? document.activeElement : null;
+    const focusCard = was && was.closest(".card") ? was.closest(".card").dataset.key : null;
+    const focusName = was ? was.dataset.tool || null : null;
     for (const chart of charts.values()) chart.dispose();
     charts.clear();
     elements.clear();
@@ -669,20 +923,23 @@
     $("desc").textContent = spec.description;
     $("desc").hidden = !spec.description;
     renderTop();
-    document.title = `${spec.name} · Metabase Claude Studio`;
-    renderNotice(spec.problems.length ? "This dashboard's files need fixing" : "", spec.problems);
+    setTitle(`${spec.name} · ${APP}`);
+    if (!state.offline) renderNotice(spec.problems.length ? "This dashboard's files need fixing" : "", spec.problems);
     renderFilters();
-    const grid = $("grid");
     grid.replaceChildren();
     sizeGrid();
+    // On a phone the cards go one under another in the order they are read: by row, then by column.
+    const order = [...spec.cards].sort((a, b) => a.row - b.row || a.col - b.col).map((c) => c.key);
     for (const card of spec.cards) {
-      const el = h("section", { class: "card" });
+      const el = h("section", { class: "card", "data-key": card.key });
       el.style.gridColumn = `${card.col + 1} / span ${card.size_x}`;
       el.style.gridRow = `${card.row + 1} / span ${card.size_y}`;
+      el.style.setProperty("--order", String(order.indexOf(card.key)));
       elements.set(card.key, el);
       grid.append(el);
     }
     for (const card of spec.cards) renderCard(card.key);
+    if (focusCard && elements.get(focusCard)) focusTool(elements.get(focusCard), focusName || "refresh");
   }
 
   // ---------- filters ----------
@@ -697,7 +954,7 @@
   function pick(key, value) {
     const slug = state.slug;
     state.picked[slug] = { ...state.picked[slug], [key]: value };
-    loadDashboard(slug);
+    loadDashboard(slug).catch(() => {});
   }
 
   function dateControl(def, value) {
@@ -705,10 +962,10 @@
     const listed = DATE_CHOICES.some(([v]) => v === current);
     const range = /^(\d{4}-\d\d-\d\d)?~(\d{4}-\d\d-\d\d)?$/.exec(current) || [];
     const choices = [...DATE_CHOICES, ["custom", "Custom range…"]];
-    const select = h("select", { class: "input", "aria-label": def.name },
+    const select = h("select", { class: "input", "aria-label": def.name, "data-key": def.key },
       choices.map(([v, label]) => h("option", { value: v, selected: listed ? v === current : v === "custom" }, label)));
-    const from = h("input", { class: "input", type: "date", value: range[1] || "", "aria-label": `${def.name} from` });
-    const to = h("input", { class: "input", type: "date", value: range[2] || "", "aria-label": `${def.name} to` });
+    const from = h("input", { class: "input", type: "date", value: range[1] || "", "aria-label": `${def.name} from`, "data-key": `${def.key}~from` });
+    const to = h("input", { class: "input", type: "date", value: range[2] || "", "aria-label": `${def.name} to`, "data-key": `${def.key}~to` });
     const custom = h("span", { class: "filter-range", hidden: listed }, from, "to", to);
     const apply = () => {
       if (from.value || to.value) pick(def.key, `${from.value}~${to.value}`);
@@ -726,14 +983,14 @@
   function choiceControl(def, value) {
     const list = (state.spec.options || {})[def.key];
     if (Array.isArray(list)) {
-      const select = h("select", { class: "input", "aria-label": def.name },
+      const select = h("select", { class: "input", "aria-label": def.name, "data-key": def.key },
         h("option", { value: "" }, "All"),
         list.map((item) => h("option", { value: String(item), selected: String(item) === String(value ?? "") }, String(item))));
       select.addEventListener("change", () => pick(def.key, select.value));
       return [select];
     }
     const input = h("input", { class: "input", value: value ?? "", "aria-label": def.name, placeholder: def.values ? "Loading the list…" : "Any",
-      inputmode: def.type === "number" ? "decimal" : null });
+      inputmode: def.type === "number" ? "decimal" : null, "data-key": def.key });
     input.addEventListener("change", () => pick(def.key, input.value.trim()));
     return [input];
   }
@@ -750,32 +1007,91 @@
     });
   }
 
+  // Drawn again only when a filter, its value or its list changed; then the focus goes back to the same control.
   function renderFilters() {
     const defs = state.spec.filters || [];
     const values = state.spec.values || {};
-    $("filters").hidden = !defs.length;
-    $("filters").replaceChildren(...defs.map((def) =>
-      h("div", { class: "filter" }, h("span", { class: "filter-name" }, def.name),
-        h("div", { class: "filter-controls" }, def.type === "date" ? dateControl(def, values[def.key]) : choiceControl(def, values[def.key])))));
-    for (const def of defs) if (def.values && !(state.spec.options || {})[def.key]) loadList(def.key);
+    const options = state.spec.options || {};
+    const box = $("filters");
+    box.hidden = !defs.length;
+    drawIfChanged(box, JSON.stringify([state.slug, defs, values, defs.map((d) => options[d.key] || null)]), () => {
+      const on = focusedKey(box);
+      box.replaceChildren(...defs.map((def) =>
+        h("div", { class: "filter" }, h("span", { class: "filter-name" }, def.name),
+          h("div", { class: "filter-controls" }, def.type === "date" ? dateControl(def, values[def.key]) : choiceControl(def, values[def.key])))));
+      if (on) focusFirst(keyed(box, on));
+    });
+    for (const def of defs) if (def.values && !options[def.key]) loadList(def.key);
   }
 
+  // ---------- the sidebar ----------
+
+  const working = (job) => !!job && job.status === "running";
+
+  // The dashboards, drawn again only when one of them or where it stands changes, so the button the owner is on keeps
+  // the focus; when they are drawn again, the focus stays on the same dashboard's button.
   function renderList(dashboards) {
-    $("list").replaceChildren(
-      ...dashboards.map((d) => {
-        const status = statusOf(d);
-        // With several databases, the line under the name says which one; with one, how many cards.
-        const lead = severalDatabases() && d.database_name ? d.database_name : `${d.cards} ${d.cards === 1 ? "card" : "cards"}`;
-        const current = state.page === "dashboards" && d.slug === state.slug && state.mode === "edit";
-        return h(
-          "button",
-          { class: "nav-item", type: "button", "aria-current": String(current), title: d.name, onclick: () => select(d.slug) },
-          icon("chart", 17),
-          h("span", { class: "nav-text" }, h("span", { class: "name" }, d.name), h("span", { class: "sub" }, `${lead} · ${d.problems ? `${d.problems} to fix` : status.text}`)),
-          h("i", { class: `dot ${status.kind}`, title: status.text })
-        );
-      })
-    );
+    const job = state.assist.job;
+    const rows = dashboards.map((d) => {
+      const status = statusOf(d);
+      const edited = working(job) && (job.slug === d.slug || job.key === d.slug);
+      // With several databases, the line under the name says which one; with one, how many cards.
+      const lead = severalDatabases() && d.database_name ? d.database_name : plural(d.cards, "card", "cards");
+      const stands = edited ? "Claude is working" : d.problems ? `${d.problems} to fix` : status.text;
+      return { slug: d.slug, name: d.name, sub: `${lead} · ${stands}`, kind: edited ? "busy" : status.kind,
+        current: state.page === "dashboards" && d.slug === state.slug && state.mode === "edit" };
+    });
+    const list = $("list");
+    drawIfChanged(list, JSON.stringify(rows), () => {
+      const on = focusedKey(list);
+      list.replaceChildren(...rows.map((row) => h(
+        "button",
+        { class: "nav-item", type: "button", "aria-current": String(row.current), title: row.name, "data-key": row.slug, onclick: () => select(row.slug) },
+        icon("chart", 17),
+        h("span", { class: "nav-text" }, h("span", { class: "name" }, row.name), h("span", { class: "sub" }, row.sub)),
+        h("i", { class: `dot ${row.kind}`, "aria-hidden": "true" })
+      )));
+      if (on) focusFirst(keyed(list, on));
+    });
+  }
+
+  // "3:49 pm" today, "27 Oct, 3:49 pm" before; words the studio already wrote as a time are kept as they are.
+  function shortTime(text) {
+    const d = parseDate(text);
+    if (!d) return String(text);
+    const time = `${d.getHours() % 12 || 12}:${String(d.getMinutes()).padStart(2, "0")} ${d.getHours() < 12 ? "am" : "pm"}`;
+    return d.toDateString() === new Date().toDateString() ? time : `${d.getDate()} ${MONTHS[d.getMonth()]}, ${time}`;
+  }
+
+  function renderDrafts(job) {
+    const drafts = state.drafts;
+    $("draftsLabel").hidden = !drafts.length;
+    $("drafts").hidden = !drafts.length;
+    const rows = drafts.map((d) => {
+      const busyHere = working(job) && job.key === d.key;
+      const stands = busyHere ? (job.kind === "build" ? "Claude is building" : "Claude is planning")
+        : d.last === "failed" ? "Plan failed" : d.last === "stopped" ? "Stopped" : d.plan ? "Plan ready" : "No plan yet";
+      const lead = severalDatabases() && d.database_name ? `${d.database_name} · ` : "";
+      return { key: d.key, title: d.title, sub: `${lead}${stands}${d.at ? ` · ${shortTime(d.at)}` : ""}`,
+        kind: busyHere ? "busy" : d.last === "failed" ? "bad" : d.plan && !d.last ? "warn" : "",
+        current: state.page === "new" && state.draft === d.key };
+    });
+    const box = $("drafts");
+    drawIfChanged(box, JSON.stringify(rows), () => {
+      const on = focusedKey(box);
+      box.replaceChildren(...rows.map((row) => {
+        const open = () => {
+          state.draft = row.key;
+          showPage("new");
+          poll();
+        };
+        return h("button", { class: "nav-item", type: "button", "aria-current": String(row.current), title: row.title, "data-key": row.key, onclick: open },
+          icon("sparkle", 17),
+          h("span", { class: "nav-text" }, h("span", { class: "name" }, row.title), h("span", { class: "sub" }, row.sub)),
+          h("i", { class: `dot ${row.kind}`, "aria-hidden": "true" }));
+      }));
+      if (on) focusFirst(keyed(box, on));
+    });
   }
 
   async function loadDashboard(slug) {
@@ -788,6 +1104,7 @@
     if (state.slug !== slug) state.view = {};
     state.gen += 1;
     state.slug = slug;
+    state.lastSlug = slug;
     state.spec = spec;
     const cards = {};
     for (const card of spec.cards) {
@@ -813,10 +1130,18 @@
   }
 
   function select(slug) {
+    if (slug !== state.slug) flash("");
     if (state.page !== "dashboards") showPage("dashboards");
     state.mode = "edit";
+    holdBox(slug);   // at once: what is typed from now on is for this dashboard
     history.replaceState(null, "", `#${encodeURIComponent(slug)}`);
     poll();
+  }
+
+  // Opens a dashboard and waits (a few seconds at most) until it is the one shown.
+  async function openSlug(slug) {
+    select(slug);
+    for (let i = 0; i < 60 && state.slug !== slug; i += 1) await new Promise((done) => setTimeout(done, 50));
   }
 
   // ---------- Ask Claude ----------
@@ -825,11 +1150,16 @@
     scalar: "number", smartscalar: "number with trend", line: "line chart", bar: "bar chart", area: "area chart",
     combo: "bars and line", row: "ranking", pie: "pie", table: "table",
   };
-  const WORKING = { plan: "Claude is planning", build: "Claude is building", edit: "Claude is working" };
 
   // The conversation in the panel: the open draft on the New dashboard screen, else the open dashboard's.
   function assistKey() {
     return state.mode === "new" ? state.draft : state.slug;
+  }
+
+  // The conversation the box writes to: a dashboard's slug, "~<draft key>", "~new" (a draft not begun), or null.
+  function convKey() {
+    if (state.page === "new") return `~${state.draft || "new"}`;
+    return state.page === "dashboards" ? state.slug : null;
   }
 
   function openDraft() {
@@ -837,20 +1167,16 @@
   }
 
   function busy() {
-    const job = state.assist.job;
-    return !!job && job.status === "running";
+    return working(state.assist.job);
   }
 
-  async function act(path, body) {
-    let reply;
-    try {
-      reply = await api(path, body);
-    } catch {
-      reply = { error: "The studio did not answer." };
-    }
-    state.assist.flash = reply.error || "";
-    await poll();
-    return reply;
+  // The chat in sight: the New dashboard screen, or a dashboard's with its panel (or drawer) open.
+  function chatInSight() {
+    return state.page === "new" || (state.page === "dashboards" && !!state.slug && assistShown());
+  }
+
+  function focusBox() {
+    return focusFirst($("askText"));
   }
 
   function planEl(message, latest) {
@@ -879,7 +1205,8 @@
         { class: "plan-foot" },
         h("span", { class: "assist-hint" }, note),
         latest && !message.built && !busy()
-          ? h("button", { class: "btn primary small", type: "button", onclick: () => act("/api/build", { plan: message.id, draft: state.draft }) }, icon("check", 14), "Build this dashboard")
+          ? h("button", { class: "btn primary small", type: "button", onclick: (event) => build(message.id, event.currentTarget) },
+              icon("check", 14), "Build this dashboard")
           : null
       )
     );
@@ -889,16 +1216,16 @@
     if (message.role === "user") {
       // A sent file opens (a picture or a PDF) or downloads from the studio, through the link the server gives it.
       const files = attach && message.files && message.files.length
-        ? h("div", { class: "msg-files" }, message.files.map((f) => attach.chip(f, { href: f.href, view: f.view })))
+        ? h("div", { class: "msg-files", role: "list", "aria-label": "Attached files" }, message.files.map((f) => attach.chip(f, { href: f.href, view: f.view })))
         : null;
-      return h("div", { class: "msg user" }, h("div", { class: "bubble" }, message.text), files);
+      return h("div", { class: "msg user", "data-id": message.id }, h("div", { class: "bubble" }, message.text), files);
     }
-    if (message.role === "info") return h("div", { class: "msg info" }, message.text);
+    if (message.role === "info") return h("div", { class: "msg info", "data-id": message.id }, message.text);
     const meta = message.meta ? h("div", { class: "msg-meta" }, message.meta) : null;
-    if (message.role === "error") return h("div", { class: "msg error" }, icon("alert", 16), h("div", null, message.text, meta));
+    if (message.role === "error") return h("div", { class: "msg error", "data-id": message.id }, icon("alert", 16), h("div", null, message.text, meta));
     return h(
       "div",
-      { class: "msg claude" },
+      { class: "msg claude", "data-id": message.id },
       h("div", { class: "msg-who" }, icon("sparkle", 14), message.role === "plan" ? "Claude’s plan" : "Claude"),
       message.text ? h("div", { class: "msg-text" }, message.text) : null,
       message.role === "plan" ? planEl(message, latestPlan) : null,
@@ -909,6 +1236,7 @@
   function suggestion(text) {
     const use = () => {
       $("askText").value = text;
+      unrefuse();
       $("askText").focus();
     };
     return h("button", { class: "suggest", type: "button", onclick: use }, text);
@@ -916,6 +1244,12 @@
 
   function emptyHint() {
     const fresh = state.mode === "new";
+    if (fresh && noDatabase()) {
+      return h("div", { class: "assist-empty" },
+        h("b", null, "Connect a database first"),
+        "A new dashboard is planned on one of your databases. Add one in Settings and read its table list, then come back here.",
+        h("div", null, h("button", { class: "btn primary", type: "button", onclick: () => go("settings") }, icon("settings", 15), "Open Settings")));
+    }
     const ideas = fresh
       ? ["Orders and revenue today against yesterday, and the last 30 days", "Top 10 customers by orders this month", "Sign-ups per day, with a date filter"]
       : ["Stack the daily chart by channel", "Add a table of the top 10 customers", "Add a date filter"];
@@ -930,28 +1264,38 @@
     );
   }
 
+  // The conversation is a log a screen reader follows (#messages, role=log): drawn a message at a time, so what is new
+  // is said and nothing else; another conversation, or this one cleared, is drawn afresh in a log of its own.
+  const log = { key: undefined, ids: [], keys: [] };
+
   function renderMessages() {
     const messages = state.assist.messages;
+    const key = state.assist.key;
+    const emptyBox = $("assistEmpty");
+    emptyBox.hidden = messages.length > 0;
+    if (!messages.length) {
+      drawIfChanged(emptyBox, JSON.stringify([state.mode, state.mode === "new" && noDatabase()]), () => emptyBox.replaceChildren(emptyHint()));
+    }
     const roles = messages.map((m) => m.role);
     const lastPlan = roles.lastIndexOf("plan");
     const latest = lastPlan > roles.lastIndexOf("user") ? lastPlan : -1;
-    $("messages").replaceChildren(...(messages.length ? messages.map((m, i) => messageEl(m, i === latest)) : [emptyHint()]));
-  }
-
-  function renderActivity() {
-    const job = state.assist.job;
-    if (!job || job.status !== "running" || job.key !== assistKey()) return void $("activity").replaceChildren();
-    const seconds = Math.max(0, Math.round((Date.now() - new Date(job.started).getTime()) / 1000));
-    const elapsed = seconds >= 60 ? `${Math.floor(seconds / 60)} min ${seconds % 60} s` : `${seconds} s`;
-    const queries = job.queries ? ` · ${job.queries} ${job.queries === 1 ? "query" : "queries"}` : "";
-    $("activity").replaceChildren(
-      h(
-        "div",
-        { class: "activity" },
-        h("div", { class: "activity-head" }, h("i", { class: "pulse" }), WORKING[job.kind] || "Claude is working", h("span", { class: "activity-time" }, elapsed + queries)),
-        h("ol", null, job.activity.slice(-12).map((a) => h("li", null, h("time", null, a.at), a.text, a.detail ? h("small", null, a.detail) : null)))
-      )
-    );
+    const running = busy();
+    const ids = messages.map((m) => m.id);
+    const keys = messages.map((m, i) => JSON.stringify([m, i === latest, m.role === "plan" && running, !!attach, severalDatabases()]));
+    const box = $("messages");
+    const same = log.key === key && log.ids.length <= ids.length && log.ids.every((id, i) => id === ids[i]);
+    if (same) {
+      const nodes = [...box.children];
+      log.keys.forEach((k, i) => {
+        if (k !== keys[i] && nodes[i]) nodes[i].replaceWith(messageEl(messages[i], i === latest));
+      });
+      box.append(...messages.slice(log.ids.length).map((m, j) => messageEl(m, log.ids.length + j === latest)));
+    } else {
+      const fresh = h("div", { id: "messages", role: "log", "aria-label": box.getAttribute("aria-label") });
+      fresh.append(...messages.map((m, i) => messageEl(m, i === latest)));
+      box.replaceWith(fresh);
+    }
+    Object.assign(log, { key, ids, keys });
   }
 
   // On the New dashboard screen, with more than one database, the user says which one the dashboard is for.
@@ -977,28 +1321,57 @@
     select.title = kept ? "This draft was begun on this database." : "";
   }
 
+  // The panel's heading: an h2 beside a dashboard, the page's h1 on the New dashboard screen.
+  function setAssistHeading(text) {
+    const tag = state.page === "new" ? "H1" : "H2";
+    let heading = $("assistTitle");
+    if (heading.tagName !== tag) {
+      const next = document.createElement(tag);
+      next.id = "assistTitle";
+      next.className = "assist-title";
+      heading.replaceWith(next);
+      heading = next;
+    }
+    setText(heading, text);
+  }
+
   function renderComposer() {
     const job = state.assist.job;
     const running = busy();
     renderDatabaseChoice();
-    const blocked = running || state.offline || (state.mode === "edit" && !state.slug);
-    $("askText").disabled = blocked;
-    $("sendBtn").disabled = blocked;
-    $("attachBtn").disabled = blocked;
+    const fresh = state.mode === "new";
+    const here = running && !!assistKey() && job.key === assistKey();
+    const noDb = fresh && noDatabase();
+    const shut = state.offline || !heldFor || (state.mode === "edit" && !state.slug);
+    const box = $("askText");
+    box.readOnly = sending;
+    $("sendBtn").setAttribute("aria-disabled", String(running || shut || sending || noDb));
+    $("attachBtn").setAttribute("aria-disabled", String(shut || noDb));
     $("stopBtn").hidden = !running;
-    $("askText").placeholder = state.mode === "new" ? "Describe the dashboard you want…" : "Ask for a change to this dashboard…";
-    let hint = state.mode === "new" ? "Plan first. Nothing is read until you press Build." : "Changes run directly.";
-    if (running) hint = job.key === assistKey() ? "Claude is working." : "Claude is working on another request.";
-    $("askHint").textContent = state.assist.flash || hint;
+    setText($("stopBtn").querySelector(".label"), running && !here && job.name ? `Stop ${job.name}` : "Stop");
+    const placeholder = running ? "Write your next request: it can be sent once Claude is done…"
+      : fresh ? "Describe the dashboard you want…" : "Ask for a change to this dashboard…";
+    if (box.placeholder !== placeholder) box.placeholder = placeholder;
+    let hint = fresh ? "Plan first. Nothing is read until you press Build." : "Changes run directly.";
+    if (state.offline) hint = "The studio isn't answering. Trying again…";
+    else if (noDb) hint = "Connect a database first, in Settings.";
+    else if (running) hint = here ? "Claude is working." : `Claude is working on ${job.name || "another request"}.`;
+    setText($("askHint"), hint);
     const planFirst = "Claude shows a plan first. Nothing is read from the database until you press Build.";
-    $("assistContext").textContent = state.mode === "new" ? planFirst : state.spec ? `Changing: ${state.spec.name}` : "";
+    setText($("assistContext"), fresh ? planFirst : state.spec ? `Changing: ${state.spec.name}` : "");
     const draft = openDraft();
-    if (state.mode === "new") document.querySelector(".assist-title").textContent = draft ? draft.title : "New dashboard";
-    $("newDash").setAttribute("aria-current", String(state.mode === "new" && !state.draft));
-    $("assistClear").hidden = !state.assist.messages.length || (running && job.key === assistKey());
-    const clearing = state.mode === "new" ? "Remove this draft" : "Forget this conversation. The dashboard itself is not changed.";
-    $("assistClear").title = clearing;
-    $("assistClear").setAttribute("aria-label", clearing);
+    const heading = fresh ? (draft ? draft.title : "New dashboard") : "Ask Claude";
+    setAssistHeading(heading);
+    if (state.page === "new") setTitle(`${heading} · ${APP}`);
+    $("newDash").setAttribute("aria-current", String(state.page === "new" && !state.draft));
+    const clear = $("assistClear");
+    clear.hidden = !state.assist.messages.length || here;
+    const name = fresh ? "Remove this draft…" : "Clear this conversation…";
+    if (clear.getAttribute("aria-label") !== name) {
+      clear.setAttribute("aria-label", name);
+      clear.title = fresh ? "Remove this draft. It moves to the Trash." : "Clear this conversation. It moves to the Trash; the dashboard itself is not changed.";
+      clear.replaceChildren(icon(fresh ? "trash" : "chat", 15));
+    }
   }
 
   async function updateAssist(assistant) {
@@ -1006,36 +1379,213 @@
     const job = assistant.job;
     if (a.followed === undefined) a.followed = job && job.status !== "running" ? job.id : null;
     a.job = job;
-    // A finished build opens its dashboard, once.
+    // A finished build opens its dashboard, once, when the owner is on its draft; elsewhere it is said, and it is in the
+    // sidebar.
     if (job && job.kind === "build" && job.status === "done" && job.slug && a.followed !== job.id) {
       a.followed = job.id;
-      state.draft = null;
-      if (state.page === "new") showPage("dashboards");
-      state.mode = "edit";
-      history.replaceState(null, "", `#${encodeURIComponent(job.slug)}`);
-      a.again = true;
+      if (state.page === "new" && state.draft === job.key) {
+        state.draft = null;
+        showPage("dashboards");
+        state.mode = "edit";
+        history.replaceState(null, "", `#${encodeURIComponent(job.slug)}`);
+        a.again = true;
+      } else {
+        announce(`${job.name || "The new dashboard"} is built. It is in the sidebar.`);
+      }
     }
+    holdBox(convKey());
     const key = assistKey();
     const thread = $("thread");
     const atBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 60;
     const changed = assistant.rev !== a.rev || key !== a.key;
     if (changed) {
+      const reply = key ? await api(`/api/thread?key=${encodeURIComponent(key)}`) : {};
       a.rev = assistant.rev;
       a.key = key;
-      a.messages = key ? (await api(`/api/thread?key=${encodeURIComponent(key)}`)).messages || [] : [];
+      a.messages = reply.messages || [];
       renderMessages();
     }
-    renderActivity();
     renderComposer();
     if (changed || atBottom) thread.scrollTop = thread.scrollHeight;
   }
 
-  function showAssist(show) {
-    $("app").classList.toggle("no-assist", !show);
-    $("showAssist").hidden = show;
+  // Claude's steps while it works (#activity, in place) and Try again or Carry on after a run that did not finish
+  // (#assistOffer): static/progress.js draws both, after every look at the studio.
+  function drawProgress() {
+    if (!window.studioProgress) return;
+    const key = assistKey();
     try {
-      localStorage.setItem("assist", show ? "1" : "0");
-    } catch {}
+      window.studioProgress.draw({ activity: $("activity"), offer: $("assistOffer") },
+        { job: state.assist.job, key, messages: key === state.assist.key ? state.assist.messages : [], inSight: chatInSight(),
+          mode: state.mode, draft: openDraft() }, ui);
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
+  // ---------- the box: kept per conversation ----------
+
+  const held = new Map();   // a conversation (convKey) -> {text, files}: what was being written for it while another is shown
+  let heldFor;              // the conversation whose request the box holds now
+  let sending = false;
+
+  // Another conversation shown: what was written in the box, and the files attached to it, are kept for the one they
+  // were meant for, and the one shown gets back its own. Never attached.clear() here: it empties the kept list in place.
+  function holdBox(to) {
+    if (heldFor === to) return;
+    if (heldFor) held.set(heldFor, { text: $("askText").value, files: attached ? attached.files : [] });
+    const next = (to && held.get(to)) || { text: "", files: [] };
+    $("askText").value = next.text;
+    if (attached) attached.set(next.files);
+    heldFor = to;
+    unrefuse();
+  }
+
+  function refuse(text) {
+    $("askRefused").textContent = text;
+    $("askRefused").hidden = false;
+    $("askHint").hidden = true;
+    announce(text, { urgent: true });
+  }
+
+  function unrefuse() {
+    if ($("askRefused").hidden) return;
+    $("askRefused").hidden = true;
+    $("askRefused").textContent = "";
+    $("askHint").hidden = false;
+  }
+
+  function newDraftKey() {
+    const bytes = crypto.getRandomValues(new Uint8Array(6));
+    return `draft-${[...bytes].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
+  }
+
+  // What /api/ask takes for a conversation's next request.
+  function askBody(conv, text, files) {
+    const fresh = conv.startsWith("~");
+    return { mode: fresh ? "new" : "edit", slug: fresh ? null : conv, text, files,
+      database: fresh && severalDatabases() ? state.newDb : undefined, draft: fresh ? conv.slice(1) : undefined };
+  }
+
+  function busyWords(conv) {
+    const job = state.assist.job;
+    const mine = job.key === (conv.startsWith("~") ? conv.slice(1) : conv);
+    return mine ? "Claude is still working on the last request. What you wrote stays here: send it once Claude is done."
+      : `Claude is working on ${job.name || "another request"}. What you wrote stays here: send it once Claude is done.`;
+  }
+
+  async function send(event) {
+    event.preventDefault();
+    if (sending) return;
+    const conv = heldFor;
+    const box = $("askText");
+    const text = box.value.trim();
+    if (state.offline) return refuse("The studio isn't answering. What you wrote stays here.");
+    if (!conv) return;
+    if (conv.startsWith("~") && noDatabase()) return refuse("Connect a database first: add one in Settings and read its table list.");
+    if (!text) return refuse("Say what you want first.");
+    if (busy()) return refuse(busyWords(conv));
+    // The first message begins a draft, which the sidebar lists from now on: the box's words are that draft's.
+    const begun = conv === "~new";
+    const sentFor = begun ? `~${newDraftKey()}` : conv;
+    if (begun) {
+      state.draft = sentFor.slice(1);
+      heldFor = sentFor;
+      history.replaceState(null, "", `#${sentFor}`);
+    }
+    const kept = $("askForm").contains(document.activeElement);
+    sending = true;
+    box.readOnly = true;   // what is being sent stays as it is, and keeps the focus
+    box.setAttribute("aria-busy", "true");
+    renderComposer();
+    let reply;
+    try {
+      reply = await whileBusy($("sendBtn"), () => post("/api/ask", askBody(sentFor, text, attached ? attached.payload() : [])));
+    } finally {
+      sending = false;
+      box.readOnly = false;
+      box.removeAttribute("aria-busy");
+    }
+    if (reply.error) {
+      refuse(reply.error);
+      if (begun && heldFor === sentFor) {
+        // The draft did not begin: the words are the New dashboard screen's again.
+        state.draft = null;
+        heldFor = "~new";
+        history.replaceState(null, "", "#~new");
+      } else if (begun && held.has(sentFor)) {
+        held.set("~new", held.get(sentFor));
+        held.delete(sentFor);
+      }
+    } else {
+      unrefuse();
+      held.delete(sentFor);
+      if (heldFor === sentFor) {   // still shown: emptied (another conversation shown meanwhile keeps its own)
+        box.value = "";
+        if (attached) attached.clear();
+      }
+    }
+    await poll();
+    if (kept) focusBox();
+  }
+
+  // The shown conversation's next request, by the same path as the box, with no files (Try again, Carry on).
+  async function ask(text, button) {
+    const conv = convKey();
+    if (!conv || conv === "~new") return { error: "There is no conversation to send it to." };
+    if (busy()) {
+      refuse(busyWords(conv));
+      return { error: busyWords(conv) };
+    }
+    const run = () => post("/api/ask", askBody(conv, text, []));
+    const reply = button ? await whileBusy(button, run) : await run();
+    if (reply.error) refuse(reply.error);
+    else unrefuse();
+    await poll();
+    focusBox();
+    return reply;
+  }
+
+  async function build(planId, button) {
+    const run = () => post("/api/build", { plan: planId, draft: state.draft });
+    const reply = button ? await whileBusy(button, run) : await run();
+    if (reply.error) refuse(reply.error);
+    else unrefuse();
+    await poll();
+    focusBox();
+    return reply;
+  }
+
+  // ---------- the panel, and the drawer it becomes on a laptop ----------
+
+  // From 900 to 1180 px the panel is a drawer over the dashboard's right side: closed at load, opened by Ask Claude.
+  const drawerMedia = window.matchMedia("(min-width: 900px) and (max-width: 1180px)");
+  let drawerOpen = false;
+
+  function assistShown() {
+    return drawerMedia.matches ? drawerOpen : !$("app").classList.contains("no-assist");
+  }
+
+  function layoutAssist() {
+    const drawer = drawerMedia.matches;
+    $("app").classList.toggle("drawer-open", drawer && drawerOpen);
+    $("showAssist").hidden = !drawer && assistShown();
+    if (drawer) $("showAssist").setAttribute("aria-expanded", String(drawerOpen));
+    else $("showAssist").removeAttribute("aria-expanded");
+  }
+
+  function showAssist(show, { focus = false } = {}) {
+    if (drawerMedia.matches) {
+      drawerOpen = show;
+    } else {
+      $("app").classList.toggle("no-assist", !show);
+      try {
+        localStorage.setItem("assist", show ? "1" : "0");
+      } catch {}
+    }
+    layoutAssist();
+    if (focus) focusFirst(show ? $("askText") : $("showAssist"));   // never left on a button that is gone
+    drawProgress();
   }
 
   // ---------- polling ----------
@@ -1043,9 +1593,10 @@
   let polling = false;
   let timer = 0;
 
-  // After a reload: back to the draft, or the New dashboard screen, that was open.
+  // After a reload, or a link followed: the Trash, Settings, or the draft (or New dashboard screen) that was open.
   function reopen() {
     const mark = decodeURIComponent(location.hash.slice(1));
+    if (mark === "~trash" || mark === "~settings") return void showPage(mark.slice(1));
     if (!mark.startsWith("~")) return;
     const key = mark.slice(1);
     if (key !== "new" && !state.drafts.some((d) => d.key === key)) return;
@@ -1053,31 +1604,90 @@
     showPage("new");
   }
 
-  function renderDrafts(job) {
-    const drafts = state.drafts;
-    $("draftsLabel").hidden = !drafts.length;
-    $("drafts").hidden = !drafts.length;
-    $("drafts").replaceChildren(...drafts.map((d) => {
-      const working = job && job.status === "running" && job.key === d.key;
-      const stands = working ? (job.kind === "build" ? "Claude is building" : "Claude is planning") : d.plan ? "Plan ready" : "No plan yet";
-      const lead = severalDatabases() && d.database_name ? `${d.database_name} · ` : "";
-      const open = () => {
-        state.draft = d.key;
-        showPage("new");
-        poll();
-      };
-      return h("button", { class: "nav-item", type: "button", "aria-current": String(state.page === "new" && state.draft === d.key), title: d.title, onclick: open },
-        icon("sparkle", 17),
-        h("span", { class: "nav-text" }, h("span", { class: "name" }, d.title), h("span", { class: "sub" }, lead + stands)),
-        h("i", { class: `dot ${d.plan && !working ? "warn" : ""}`, title: stands }));
-    }));
+  function showOffline(message) {
+    const news = !state.offline || $("notice").textContent !== message;
+    const was = state.offline;
+    state.offline = true;
+    if (!news) return;
+    renderNotice(message, []);
+    announce(message, { urgent: true });
+    if (!was) {
+      renderActions();
+      for (const key of elements.keys()) renderCard(key);
+    }
+    renderComposer();
   }
 
-  function showOffline(message) {
-    if (state.offline) return;
-    state.offline = true;
-    renderNotice(message, []);
-    renderComposer();
+  function backOnline() {
+    if (!state.offline) return;
+    state.offline = false;
+    const problems = state.spec ? state.spec.problems : [];
+    renderNotice(problems.length ? "This dashboard's files need fixing" : "", problems);
+    renderActions();
+    for (const key of elements.keys()) renderCard(key);
+    announce("The studio is answering again.");
+  }
+
+  // The empty page offers the Trash when a removed dashboard is there to put back.
+  let emptyAsked = false;
+  async function offerTrash() {
+    if (emptyAsked) return;
+    emptyAsked = true;
+    let reply = null;
+    try {
+      reply = await api("/api/trash");
+    } catch {
+      emptyAsked = false;
+    }
+    $("emptyTrash").hidden = !(reply && Array.isArray(reply.entries) && reply.entries.some((e) => e.kind === "dashboard"));
+  }
+
+  async function look(data) {
+    const firstLook = !state.setup;
+    state.setup = data.setup;
+    state.databases = data.databases || [];
+    state.drafts = data.drafts || [];
+    state.assist.job = data.assistant.job;
+    if (firstLook && !data.setup.database) showPage("settings");
+    else if (firstLook) reopen();
+    // A draft that was in the list and no longer is has been built or removed. One just begun may not be in it yet:
+    // this answer can have left the server before the first message arrived.
+    if (state.draft && state.drafts.some((d) => d.key === state.draft)) {
+      state.listed = state.draft;
+    } else if (state.draft && state.listed === state.draft) {
+      state.draft = null;
+      if (state.page === "new") history.replaceState(null, "", "#~new");
+    }
+    renderDrafts(data.assistant.job);
+    if (state.page === "settings" || state.page === "trash") return void renderList(data.dashboards);
+    if (state.page === "new") {
+      renderList(data.dashboards);
+      return void (await updateAssist(data.assistant));
+    }
+    const slugs = data.dashboards.map((d) => d.slug);
+    const wanted = decodeURIComponent(location.hash.slice(1));
+    const slug = slugs.includes(wanted) ? wanted : slugs.includes(state.slug) ? state.slug : slugs[0] || null;
+    if (!slug) {
+      state.slug = null;
+      state.spec = null;
+      $("app").classList.add("no-dashboards");
+      renderList([]);
+      $("top").hidden = true;
+      $("desc").hidden = true;
+      $("filters").hidden = true;
+      $("grid").replaceChildren();
+      if (!state.offline) renderNotice("", []);
+      if ($("empty").hidden) setTitle(APP);
+      $("empty").hidden = false;
+      offerTrash();
+    } else {
+      $("app").classList.remove("no-dashboards");
+      emptyAsked = false;
+      const current = data.dashboards.find((d) => d.slug === slug);
+      if (slug !== state.slug || !state.spec || current.version !== state.spec.version) await loadDashboard(slug);
+      renderList(data.dashboards);
+    }
+    await updateAssist(data.assistant);
   }
 
   async function poll() {
@@ -1086,60 +1696,26 @@
     polling = true;
     clearTimeout(timer);
     try {
-      const data = await api("/api/state");
-      if (!data.dashboards) {
-        showOffline("This window is no longer connected. Open the studio again from its shortcut.");
-        return;
+      let data;
+      try {
+        data = await api("/api/state");
+      } catch {
+        return void showOffline("The studio isn't answering. Trying again…");
       }
-      if (state.offline) {
-        state.offline = false;
-        const problems = state.spec ? state.spec.problems : [];
-        renderNotice(problems.length ? "This dashboard's files need fixing" : "", problems);
+      // Only a window whose session has ended (a 401) is sent to the shortcut.
+      if (!data.dashboards) return void showOffline("This window is no longer connected. Open the studio again from its shortcut.");
+      if (!state.answered) {
+        state.answered = true;
+        renderActions();
+        for (const key of elements.keys()) renderCard(key);
       }
-      const firstLook = !state.setup;
-      state.setup = data.setup;
-      state.databases = data.databases || [];
-      state.drafts = data.drafts || [];
-      if (firstLook && !data.setup.database) showPage("settings");
-      else if (firstLook) reopen();
-      // A draft that was in the list and no longer is has been built or removed. One just begun may not be in it yet:
-      // this answer can have left the server before the first message arrived.
-      if (state.draft && state.drafts.some((d) => d.key === state.draft)) {
-        state.listed = state.draft;
-      } else if (state.draft && state.listed === state.draft) {
-        state.draft = null;
-        if (state.page === "new") history.replaceState(null, "", "#~new");
-      }
-      renderDrafts(data.assistant.job);
-      if (state.page === "settings") return void renderList(data.dashboards);
-      if (state.page === "new") {
-        renderList(data.dashboards);
-        return void (await updateAssist(data.assistant));
-      }
-      const slugs = data.dashboards.map((d) => d.slug);
-      const wanted = decodeURIComponent(location.hash.slice(1));
-      const slug = slugs.includes(wanted) ? wanted : slugs.includes(state.slug) ? state.slug : slugs[0] || null;
-      if (!slug) {
-        state.slug = null;
-        state.spec = null;
-        $("app").classList.add("no-dashboards");
-        renderList([]);
-        $("top").hidden = true;
-        $("desc").hidden = true;
-        $("filters").hidden = true;
-        $("grid").replaceChildren();
-        renderNotice("", []);
-        $("empty").hidden = false;
-      } else {
-        $("app").classList.remove("no-dashboards");
-        const current = data.dashboards.find((d) => d.slug === slug);
-        if (slug !== state.slug || !state.spec || current.version !== state.spec.version) await loadDashboard(slug);
-        renderList(data.dashboards);
-      }
-      await updateAssist(data.assistant);
-    } catch {
-      showOffline("The studio is not running. Open it again from its shortcut.");
+      backOnline();
+      await look(data);
+      drawProgress();
+    } catch (error) {
+      console.error(error);
     } finally {
+      retitle();
       polling = false;
       const soon = state.assist.again;
       state.assist.again = false;
@@ -1158,32 +1734,22 @@
     }
   }
 
-  function liveList(title, items, kind) {
-    return items.length ? h("div", { class: `live-box ${kind}` }, h("strong", null, title), h("ul", null, items.map((text) => h("li", null, text)))) : null;
-  }
-
-  function liveFooter(...buttons) {
-    return h("div", { class: "live-foot" }, buttons);
-  }
-
-  function closeButton(label) {
-    return h("button", { class: "btn", type: "button", onclick: () => $("liveDialog").close() }, label);
-  }
-
-  function showLive(...content) {
-    $("liveDialog").replaceChildren(...content.flat().filter(Boolean));
-    const first = $("liveDialog").querySelector("button");
-    if (first) first.focus();
-  }
-
   async function openGoLive() {
     const slug = state.slug;
-    if (!slug) return;
-    showLive(h("h2", null, "Go live"), h("p", { class: "live-soft" }, "Checking with Metabase…"));
-    $("liveDialog").showModal();
-    const reply = await post("/api/golive/plan", { slug });
-    if (!reply.plan) return showLive(h("h2", null, "Go live"), liveList("Go live is not possible", [reply.error || "Unknown error."], "stop"), liveFooter(closeButton("Close")));
-    const plan = reply.plan;
+    const button = $("goLive");
+    if (!slug || isOff(button)) return;
+    await whileBusy(button, async () => {
+      const token = showDialog(h("h2", null, "Go live"), h("p", { class: "live-soft" }, "Checking with Metabase…"), liveFooter(closeButton("Cancel")));
+      const reply = await post("/api/golive/plan", { slug });
+      if (!ownsDialog(token)) return;   // cancelled, or another dialog in its place: this answer is not wanted now
+      if (!reply.plan) {
+        return void showDialog(h("h2", null, "Go live"), liveList("Go live is not possible", [reply.error || "Unknown error."], "stop"), liveFooter(closeButton("Close")));
+      }
+      showPlan(slug, reply.plan, token);
+    });
+  }
+
+  function showPlan(slug, plan, token) {
     const where = plan.target;
     const counts = [];
     if (plan.cards.create) counts.push(`${plan.cards.create} new`);
@@ -1193,9 +1759,10 @@
     // Metabase runs each query as it is written, so personal data hidden here is shown there. The user says yes to that.
     const sensitive = blocked ? [] : plan.sensitive || [];
     const agree = sensitive.length ? h("input", { type: "checkbox" }) : null;
-    const go = h("button", { class: "btn primary", type: "button", disabled: blocked || !!agree, onclick: () => publish(slug, plan.name, !!agree) }, "Go live");
+    const go = h("button", { class: "btn primary", type: "button", disabled: blocked || !!agree }, "Go live");
+    go.addEventListener("click", () => publish(slug, plan.name, !!agree, go, token));
     if (agree) agree.addEventListener("change", () => { go.disabled = !agree.checked; });
-    showLive(
+    showDialog(
       h("h2", null, `Go live: ${plan.name}`),
       where
         ? h(
@@ -1218,31 +1785,49 @@
             h("ul", null, sensitive.map((s) => h("li", null, `“${s.card}”: ${s.columns.join(", ")}`))),
             h("label", { class: "check" }, agree, "Everyone who can open this dashboard in Metabase will see these values. Publish it with them."))
         : null,
-      blocked ? null : h("p", { class: "live-soft" }, "No query runs now. Metabase runs the cards when someone opens the dashboard."),
+      blocked ? null : h("p", { class: "live-soft live-said" }, "No query runs now. Metabase runs the cards when someone opens the dashboard."),
       liveFooter(closeButton("Cancel"), go)
     );
   }
 
-  async function publish(slug, name, sensitiveOk) {
-    showLive(h("h2", null, `Go live: ${name}`), h("p", { class: "live-soft" }, "Publishing to Metabase…"));
-    const reply = await post("/api/golive", { slug, sensitive_ok: !!sensitiveOk });
+  // The result goes in the dialog while it is still Go live's; closed meanwhile, it is a word on the page instead.
+  async function publish(slug, name, sensitiveOk, button, token) {
+    const said = $("liveDialog").querySelector(".live-said");
+    if (said) said.textContent = "Publishing to Metabase…";
+    const reply = await whileBusy(button, () => post("/api/golive", { slug, sensitive_ok: !!sensitiveOk }));
     await poll();
+    const mine = ownsDialog(token);
     if (!reply.published) {
-      return showLive(h("h2", null, `Go live: ${name}`), liveList("Go live did not finish", [reply.error || "Unknown error."], "stop"),
-        h("p", { class: "live-soft" }, "Anything already created is remembered, so trying again continues and does not make a copy."),
-        liveFooter(closeButton("Close")));
+      const error = reply.error || "Unknown error.";
+      if (mine) {
+        showDialog(h("h2", null, `Go live: ${name}`), liveList("Go live did not finish", [error], "stop"),
+          h("p", { class: "live-soft" }, "Anything already created is remembered, so trying again continues and does not make a copy."),
+          liveFooter(closeButton("Close")));
+      } else {
+        flash(`Go live of ${name} did not finish: ${error}`, null, "bad");
+      }
+      return void announce(`Go live of ${name} did not finish: ${error}`, { urgent: true });
     }
-    showLive(
-      h("h2", null, `${name} is live`),
-      h("p", null, reply.published.mode === "update" ? "The dashboard in Metabase was updated." : `The dashboard was created in “${reply.published.target.collection}”.`),
-      h("p", { class: "live-link" }, reply.published.url),
-      liveFooter(closeButton("Close"), h("button", { class: "btn primary", type: "button", onclick: () => openInMetabase(slug) }, "Open in Metabase"))
-    );
+    const open = () => h("button", { class: "btn small", type: "button", onclick: () => openInMetabase(slug) }, icon("external", 14), "Open in Metabase");
+    if (mine) {
+      showDialog(
+        h("h2", null, `${name} is live`),
+        h("p", null, reply.published.mode === "update" ? "The dashboard in Metabase was updated." : `The dashboard was created in “${reply.published.target.collection}”.`),
+        h("p", { class: "live-link" }, reply.published.url),
+        liveFooter(closeButton("Close"), h("button", { class: "btn primary", type: "button", onclick: () => openInMetabase(slug) }, "Open in Metabase"))
+      );
+    } else {
+      flash(`${name} is live in Metabase.`, open());
+    }
+    announce(`${name} is live in Metabase.`);
   }
 
   async function openInMetabase(slug) {
     const reply = await post("/api/open", { slug });
-    if (reply.error) renderNotice(reply.error, []);
+    if (reply.error) {
+      flash(reply.error, null, "bad");
+      announce(reply.error, { urgent: true });
+    }
   }
 
   // Asks whether the published dashboard is still in Metabase. This goes to Metabase, never to the database.
@@ -1266,46 +1851,75 @@
 
   $("goLive").addEventListener("click", openGoLive);
   $("openLive").addEventListener("click", () => openInMetabase(state.slug));
-  window.addEventListener("focus", checkLive);
+  window.addEventListener("focus", () => {
+    checkLive();
+    setTimeout(retitle, 0);   // a run's Ready or Needs you goes once the window is looked at
+  });
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) checkLive();
   });
 
-  // ---------- remove ----------
+  // ---------- remove, and Put back ----------
 
-  function askRemove() {
-    const spec = state.spec;
-    if (!spec) return;
-    const title = h("h2", null, `Remove ${spec.name}?`);
-    const stillLive = spec.live && spec.metabase !== "trashed" && spec.metabase !== "gone";
+  function askRemove(spec) {
+    const shown = spec || state.spec;
+    if (!shown) return;
+    const title = h("h2", null, `Remove ${shown.name}?`);
+    const stillLive = shown.live && shown.metabase !== "trashed" && shown.metabase !== "gone";
     const remove = h("button", { class: "btn danger", type: "button" }, "Remove");
-    remove.addEventListener("click", async () => {
-      remove.disabled = true;
-      const reply = await post("/api/remove", { slug: spec.slug });
-      if (reply.error) return showLive(title, liveList("It was not removed", [reply.error], "stop"), liveFooter(closeButton("Close")));
-      $("liveDialog").close();
-      state.slug = null;
-      state.spec = null;
-      history.replaceState(null, "", "#");
-      poll();
-    });
-    showLive(
+    remove.addEventListener("click", () => removeDashboard(shown, remove, title));
+    showDialog(
       title,
-      h("p", null, "It leaves the studio. Its files move to the trash folder inside data, so it can be put back by hand."),
+      h("p", null, "It leaves the studio and moves to the Trash, beside Settings, with its conversation. You can put it back from there."),
       stillLive ? h("p", { class: "live-soft" }, "It is live in Metabase and stays there. Remove it in Metabase yourself if it should go.") : null,
       liveFooter(closeButton("Cancel"), remove)
     );
-    $("liveDialog").showModal();
   }
 
-  $("removeDash").addEventListener("click", askRemove);
+  async function removeDashboard(spec, button, title) {
+    const reply = await whileBusy(button, () => post("/api/remove", { slug: spec.slug }));
+    if (reply.error) return void showDialog(title, liveList("It was not removed", [reply.error], "stop"), liveFooter(closeButton("Close")));
+    closeDialog();
+    held.delete(spec.slug);
+    if (state.slug === spec.slug) {
+      state.slug = null;
+      state.spec = null;
+      history.replaceState(null, "", "#");
+    }
+    const name = reply.name || spec.name;
+    flash(`${name} moved to the Trash.`, reply.key ? putBack(reply.key, name) : trashButton());
+    announce(`${name} moved to the Trash.`);
+    await poll();
+    focusFirst($("top").hidden ? $("emptyTitle") : $("title"));   // the dashboard now shown, or the empty page
+  }
+
+  function trashButton() {
+    return h("button", { class: "btn small", type: "button", onclick: () => go("trash") }, "Open the Trash");
+  }
+
+  function putBack(key, name) {
+    const button = h("button", { class: "btn small", type: "button", "aria-label": `Put back ${name}` }, icon("history", 14), "Put back");
+    button.addEventListener("click", async () => {
+      const reply = await whileBusy(button, () => post("/api/trash/back", { key }));
+      if (reply.error) {
+        flash(`${name} could not be put back: ${reply.error}`, trashButton(), "bad");
+        return void announce(`${name} could not be put back: ${reply.error}`, { urgent: true });
+      }
+      flash("");
+      announce(`${reply.name || name} is back.`);
+      if (reply.slug) await openSlug(reply.slug);
+      else await poll();
+      focusFirst($("title"));
+    });
+    return button;
+  }
 
   // ---------- personal data ----------
 
   async function setShown(card, columns, show) {
     const slug = state.slug;
     const reply = await post("/api/show", { slug, key: card.key, columns, show });
-    if (!reply.error && state.slug === slug) await loadDashboard(slug);
+    if (!reply.error && state.slug === slug) await loadDashboard(slug).catch(() => {});
     return reply;
   }
 
@@ -1316,13 +1930,13 @@
     const show = h("button", { class: "btn primary", type: "button" }, "Show values");
     show.addEventListener("click", async () => {
       const picked = boxes.filter((box) => box.checked).map((box) => box.value);
-      if (!picked.length) return void $("liveDialog").close();
-      show.disabled = true;
-      const reply = await setShown(card, picked, true);
-      if (reply.error) return showLive(title, liveList("Nothing was changed", [reply.error], "stop"), liveFooter(closeButton("Close")));
-      $("liveDialog").close();
+      if (!picked.length) return void closeDialog();
+      const reply = await whileBusy(show, () => setShown(card, picked, true));
+      if (reply.error) return void showDialog(title, liveList("Nothing was changed", [reply.error], "stop"), liveFooter(closeButton("Close")));
+      closeDialog();
+      if (elements.get(card.key)) focusTool(elements.get(card.key), "hide");
     });
-    showLive(
+    showDialog(
       title,
       h("p", null, `“${card.name}” has ${columns.length === 1 ? "a column that looks" : "columns that look"} like personal data. The values stay hidden unless you say otherwise.`),
       boxes.map((box) => h("label", { class: "check" }, box, box.value)),
@@ -1333,10 +1947,32 @@
       ], "warn"),
       liveFooter(closeButton("Keep hidden"), show)
     );
-    $("liveDialog").showModal();
   }
 
-  // ---------- drafts ----------
+  // ---------- clearing a conversation, removing a draft ----------
+
+  function askClear() {
+    const key = assistKey();
+    const spec = state.spec;
+    const messages = state.assist.messages;
+    if (!key || !spec || state.assist.key !== key) return;
+    const files = messages.reduce((n, m) => n + (m.files || []).length, 0);
+    const parts = [plural(messages.length, "message", "messages")];
+    if (files) parts.push(plural(files, "attached file", "attached files"));
+    const title = h("h2", null, `Clear the conversation about ${spec.name}?`);
+    const clear = h("button", { class: "btn danger", type: "button" }, "Clear");
+    clear.addEventListener("click", async () => {
+      const reply = await whileBusy(clear, () => post("/api/clear", { key }));
+      if (reply.error) return void showDialog(title, liveList("It was not cleared", [reply.error], "stop"), liveFooter(closeButton("Close")));
+      closeDialog();
+      await poll();
+      focusBox();   // the button goes with the conversation
+      announce(`The conversation about ${spec.name} moved to the Trash.`);
+    });
+    showDialog(title,
+      h("p", null, `Its ${parts.join(" and ")} ${messages.length === 1 && !files ? "moves" : "move"} to the Trash. The dashboard is not changed.`),
+      liveFooter(closeButton("Cancel"), clear));
+  }
 
   function askRemoveDraft() {
     const draft = openDraft();
@@ -1344,26 +1980,31 @@
     const title = h("h2", null, `Remove the draft “${draft.title}”?`);
     const remove = h("button", { class: "btn danger", type: "button" }, "Remove");
     remove.addEventListener("click", async () => {
-      remove.disabled = true;
-      const reply = await post("/api/draft/remove", { key: draft.key });
-      if (reply.error) return showLive(title, liveList("It was not removed", [reply.error], "stop"), liveFooter(closeButton("Close")));
-      $("liveDialog").close();
-      poll();
+      const reply = await whileBusy(remove, () => post("/api/draft/remove", { key: draft.key }));
+      if (reply.error) return void showDialog(title, liveList("It was not removed", [reply.error], "stop"), liveFooter(closeButton("Close")));
+      closeDialog();
+      held.delete(`~${draft.key}`);
+      await poll();
+      focusBox();
+      announce(`The draft “${draft.title}” moved to the Trash.`);
     });
-    showLive(
+    showDialog(
       title,
-      h("p", null, "It leaves the sidebar. Its conversation moves to the trash folder inside data, so it can be put back by hand."),
+      h("p", null, "It leaves the sidebar and moves to the Trash, beside Settings, with its conversation. You can put it back from there."),
       liveFooter(closeButton("Cancel"), remove)
     );
-    $("liveDialog").showModal();
   }
 
-  // ---------- settings and theme ----------
+  // ---------- settings, the Trash and the theme ----------
 
   function themeChanged() {
     readTheme();
     for (const key of elements.keys()) renderCard(key);
-    $("themeBtn").replaceChildren(icon(document.documentElement.dataset.theme === "dark" ? "sun" : "moon", 15));
+    const dark = document.documentElement.dataset.theme === "dark";
+    const name = dark ? "Switch to light" : "Switch to dark";
+    $("themeBtn").replaceChildren(icon(dark ? "sun" : "moon", 15));
+    $("themeBtn").setAttribute("aria-label", name);
+    $("themeBtn").title = name;
   }
 
   function setTheme(choice) {
@@ -1374,10 +2015,13 @@
   function appearanceSection() {
     const choices = [["auto", "Match the system"], ["light", "Light"], ["dark", "Dark"]];
     const row = h("div", { class: "segmented" });
-    const draw = () =>
+    const draw = () => {
+      const on = focusedKey(row);
       row.replaceChildren(...choices.map(([value, label]) =>
-        h("button", { class: "btn", type: "button", "aria-pressed": String(window.studioTheme.get() === value),
+        h("button", { class: "btn", type: "button", "aria-pressed": String(window.studioTheme.get() === value), "data-key": value,
           onclick: () => { setTheme(value); draw(); } }, label)));
+      if (on) focusFirst(keyed(row, on));
+    };
     draw();
     return h("section", { class: "panel" },
       h("header", { class: "panel-head" }, h("span", { class: "panel-mark" }, icon("moon", 17)),
@@ -1389,37 +2033,80 @@
   function showPage(page) {
     state.page = page;
     const onSettings = page === "settings";
+    const onTrash = page === "trash";
     const onNew = page === "new";
     // A new dashboard has its own screen: the conversation fills the page until the dashboard exists.
     state.mode = onNew ? "new" : "edit";
     if (onNew) history.replaceState(null, "", `#~${state.draft || "new"}`);
+    else if (onSettings || onTrash) history.replaceState(null, "", `#~${page}`);
+    else if (location.hash.startsWith("#~")) history.replaceState(null, "", state.lastSlug ? `#${encodeURIComponent(state.lastSlug)}` : "#");
+    drawerOpen = false;
     $("app").classList.toggle("on-new", onNew);
-    document.querySelector(".assist-title").textContent = onNew ? "New dashboard" : "Ask Claude";
-    if (onNew) document.title = "New dashboard · Metabase Claude Studio";
-    $("settingsPage").hidden = !onSettings;
-    $("dashPage").hidden = onSettings;
     $("app").classList.toggle("on-settings", onSettings);
+    $("app").classList.toggle("on-trash", onTrash);
+    layoutAssist();
+    $("settingsPage").hidden = !onSettings;
+    $("trashPage").hidden = !onTrash;
+    $("dashPage").hidden = onSettings || onTrash;
     $("openSettings").setAttribute("aria-current", String(onSettings));
+    $("openTrash").setAttribute("aria-current", String(onTrash));
     // Coming back, the dashboard is drawn afresh: its cards were hidden and may have changed size.
     state.slug = null;
     state.spec = null;
+    holdBox(convKey());
     renderComposer();
-    if (!onSettings) return;
+    if (!onSettings && !onTrash) return;
     $("top").hidden = false;
-    $("title").textContent = state.setup && !state.setup.database ? "Set up" : "Settings";
-    $("status").replaceChildren();
-    document.title = "Settings · Metabase Claude Studio";
+    $("title").textContent = onTrash ? "Trash" : state.setup && !state.setup.database ? "Set up" : "Settings";
+    $("title").title = "";
+    clearStatus();
+    setTitle(`${$("title").textContent} · ${APP}`);
+    if (onTrash) {
+      if (window.studioTrash) window.studioTrash.render(ui, $("trashPage"));
+      else $("trashPage").replaceChildren(h("p", { class: "field-hint" }, "The Trash could not be shown just now."));
+      return;
+    }
     const done = () => {
       showPage("dashboards");
       poll();
     };
-    window.studioSettings.render({ h, icon, get: api, post, onDone: done }, $("settingsPage"), appearanceSection());
+    window.studioSettings.render({ ...ui, onDone: done }, $("settingsPage"), appearanceSection());
   }
 
-  $("openSettings").addEventListener("click", () => {
-    showPage("settings");
-    poll();
-  });
+  // Where the page goes: "trash", "settings", "new" (a new dashboard) or a dashboard's slug.
+  function go(target) {
+    if (target === "trash" || target === "settings") {
+      showPage(target);
+      return void poll();
+    }
+    if (target === "new") {
+      state.draft = null;
+      showPage("new");
+      poll();
+      return void focusBox();
+    }
+    if (target) select(target);
+  }
+
+  // What the other parts of the page (static/settings.js, trash.js, versions.js, progress.js) are given to work with.
+  const ui = {
+    h, icon,
+    get: (path) => api(path),
+    post,
+    dialog: $("liveDialog"),
+    showDialog, closeDialog, liveList, liveFooter, closeButton,
+    announce, whileBusy, focusFirst, drawIfChanged,
+    refresh: () => poll(),
+    go,
+    askRemove,
+    ask,
+    build,
+    retitle,
+  };
+
+  $("openSettings").addEventListener("click", () => go("settings"));
+  $("openTrash").addEventListener("click", () => go("trash"));
+  $("emptyTrash").addEventListener("click", () => go("trash"));
   $("themeBtn").addEventListener("click", () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"));
   window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => setTimeout(themeChanged, 0));
   themeChanged();
@@ -1427,49 +2114,35 @@
   // The fixed buttons get their icons here, so the markup stays plain.
   for (const [id, name, size] of [
     ["newDash", "plus"], ["emptyNew", "plus"], ["refreshAll", "refresh"], ["openLive", "external"], ["goLive", "upload"],
-    ["showAssist", "sparkle"], ["assistMark", "sparkle", 18], ["emptyMark", "chart", 26], ["assistClear", "trash", 15],
+    ["showAssist", "sparkle"], ["assistMark", "sparkle", 18], ["emptyMark", "chart", 26], ["assistClear", "chat", 15],
     ["hideAssist", "panel", 15], ["sendBtn", "send", 15], ["stopBtn", "stop", 14], ["sideFoot", "lock", 14],
-    ["openSettings", "settings", 17], ["removeDash", "trash", 16],
+    ["openSettings", "settings", 17], ["openTrash", "trash", 17], ["dashSettings", "gear", 17], ["emptyTrash", "trash", 15],
   ]) {
     $(id).prepend(icon(name, size));
   }
-  $("emptyNew").addEventListener("click", () => $("newDash").click());
+  $("emptyNew").addEventListener("click", () => go("new"));
+  $("newDash").addEventListener("click", () => go("new"));
+
+  $("dashSettings").addEventListener("click", () => {
+    if (isOff($("dashSettings")) || !state.spec) return;
+    if (window.studioDashboard) window.studioDashboard.open(ui, state.spec);
+    else askRemove(state.spec);
+  });
 
   $("refreshAll").addEventListener("click", () => {
-    if (!state.spec) return;
+    if (!state.spec || isOff($("refreshAll"))) return;
     for (const card of state.spec.cards) if (card.sql) enqueue(card.key, true, false);
   });
 
-  $("askForm").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const text = $("askText").value.trim();
-    if (!text || busy()) return;
-    const fresh = state.mode === "new" && !state.draft;
-    const database = state.mode === "new" && severalDatabases() ? state.newDb : undefined;
-    if (fresh) {
-      // The first message begins a draft, which the sidebar lists from now on.
-      const bytes = crypto.getRandomValues(new Uint8Array(6));
-      state.draft = `draft-${[...bytes].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
-    }
-    const files = attached ? attached.payload() : [];
-    const reply = await act("/api/ask", { mode: state.mode, slug: state.slug, text, database, draft: state.mode === "new" ? state.draft : undefined, files });
-    if (reply.ok) {
-      $("askText").value = "";
-      if (attached) attached.clear();
-      if (state.mode === "new") history.replaceState(null, "", `#~${state.draft}`);
-    } else if (fresh) {
-      state.draft = null;
-    }
-  });
+  $("askForm").addEventListener("submit", send);
   $("askText").addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
       $("askForm").requestSubmit();
     }
   });
-  $("askText").addEventListener("input", () => {
-    state.assist.flash = "";
-  });
+  // Send stays pressable while it waits (aria-disabled): send() then says why it can't go, and keeps the words.
+  $("askText").addEventListener("input", unrefuse);
   $("askDbSelect").addEventListener("change", () => {
     state.newDb = $("askDbSelect").value;
     try {
@@ -1479,19 +2152,28 @@
   try {
     state.newDb = localStorage.getItem("new-db");
   } catch {}
-  $("stopBtn").addEventListener("click", () => act("/api/stop", {}));
-  $("assistClear").addEventListener("click", () => (state.mode === "new" ? askRemoveDraft() : act("/api/clear", { key: assistKey() })));
-  $("newDash").addEventListener("click", () => {
-    state.draft = null;
-    showPage("new");
-    poll();
-    $("askText").focus();
+  $("stopBtn").addEventListener("click", async () => {
+    const reply = await whileBusy($("stopBtn"), () => post("/api/stop", {}));
+    if (reply.error) refuse(reply.error);
+    await poll();
+    focusBox();   // the button goes once the run has ended
   });
-  $("hideAssist").addEventListener("click", () => showAssist(false));
-  $("showAssist").addEventListener("click", () => showAssist(true));
+  $("assistClear").addEventListener("click", () => (state.mode === "new" ? askRemoveDraft() : askClear()));
+  $("hideAssist").addEventListener("click", () => showAssist(false, { focus: true }));
+  $("showAssist").addEventListener("click", () => showAssist(drawerMedia.matches ? !drawerOpen : true, { focus: true }));
+  $("assist").addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !drawerMedia.matches || !drawerOpen || $("liveDialog").open) return;
+    event.preventDefault();
+    showAssist(false, { focus: true });
+  });
+  drawerMedia.addEventListener("change", () => {
+    drawerOpen = false;
+    layoutAssist();
+  });
   try {
-    if (localStorage.getItem("assist") === "0") showAssist(false);
+    if (localStorage.getItem("assist") === "0") $("app").classList.add("no-assist");
   } catch {}
+  layoutAssist();
 
   let frame = 0;
   new ResizeObserver(() => {
@@ -1503,7 +2185,9 @@
   }).observe($("grid"));
 
   window.addEventListener("hashchange", () => {
-    state.mode = "edit";
+    const mark = decodeURIComponent(location.hash.slice(1));
+    if (mark && !mark.startsWith("~")) return void select(mark);
+    reopen();
     poll();
   });
 
@@ -1513,11 +2197,12 @@
     attach = module;
     attached = module.attacher({
       button: $("attachBtn"), chips: $("askFiles"), zones: [$("assist")], paste: [$("askForm")],
-      blocked: () => busy() || state.offline || (state.mode === "edit" && !state.slug),
+      blocked: () => isOff($("attachBtn")), announce, onError: refuse,
     });
     renderMessages();
   }).catch(() => {
     $("attachBtn").hidden = true;
   });
+  renderActions();
   poll();
 })();
