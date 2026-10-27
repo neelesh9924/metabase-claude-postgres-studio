@@ -1,19 +1,36 @@
 // The Settings page, which is also the first-run setup. Loaded before app.js, which calls
 // studioSettings.render with its own helpers. A saved password or key is never sent here:
 // the page only learns that one is saved, and an empty field keeps it.
+// A button at work keeps the focus (ui.whileBusy), a redrawn list gives it back to the same control, a field's hint is
+// its description rather than part of its name, and what a check or a save found is said (each .results is a status).
 window.studioSettings = (() => {
   "use strict";
 
   const SSL_MODES = ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"];
-  let ui = null;      // { h, icon, get, post, onDone }
+  let ui = null;      // the page's ui (h, icon, get, post, whileBusy, showDialog, focusFirst…) and onDone
   let saved = {};     // settings as the server has them
   let setup = {};     // what is ready
   let found = null;   // the last answer from Metabase: databases and collections
   let openDb = null;  // the database whose form is open: its id, or "new"
   let redrawMetabase = () => {};  // the Metabase section names the databases too
+  let fields = 0;     // gives each field's control and hint an id of their own
 
+  // A labelled control, its hint linked as its description (aria-describedby), not read as part of its name.
   function field(label, input, hint) {
-    return ui.h("label", { class: "field" }, ui.h("span", { class: "field-label" }, label), input, hint ? ui.h("span", { class: "field-hint" }, hint) : null);
+    const id = `set-field-${++fields}`;
+    const control = input instanceof Element && input.matches("input, select, textarea") ? input : null;
+    const note = hint ? ui.h("span", { class: "field-hint", id: `${id}-hint` }, hint) : null;
+    if (control) {
+      control.id = control.id || id;
+      if (note) control.setAttribute("aria-describedby", [control.getAttribute("aria-describedby"), note.id].filter(Boolean).join(" "));
+    }
+    return ui.h("div", { class: "field" },
+      control ? ui.h("label", { class: "field-label", for: control.id }, label) : ui.h("span", { class: "field-label" }, label), input, note);
+  }
+
+  // The box a check's or a save's result goes in: a status, so what it says is heard.
+  function results() {
+    return ui.h("div", { class: "results", role: "status" });
   }
 
   function text(name, attrs) {
@@ -50,14 +67,14 @@ window.studioSettings = (() => {
       body);
   }
 
+  // A button's work: it says "Working…" and stays where it is, focused, its clicks ignored until the work is done. It is
+  // never disabled, which would drop the focus on the page.
   async function act(button, work) {
     const label = button.textContent;
-    button.disabled = true;
     button.textContent = "Working…";
     try {
-      await work();
+      return await ui.whileBusy(button, work);
     } finally {
-      button.disabled = false;
       button.textContent = label;
     }
   }
@@ -94,15 +111,18 @@ window.studioSettings = (() => {
     return t ? `${t.tables.toLocaleString("en-US")} tables on record, read ${t.generated_at.replace("T", " at ").slice(0, 19)}.` : "The table list has not been read yet.";
   }
 
-  // One database's form: an existing one to change, or an empty one to add. redraw draws the whole list again.
+  // One database's form: an existing one to change, or an empty one to add. redraw(message, focus) draws the whole list
+  // again, the focus on the control whose data-key is focus (else on the one that had it).
   function databaseForm(db, redraw, message) {
     const d = db || { port: 5432, sslmode: "require", schemas: ["public"] };
-    const out = ui.h("div", { class: "results" });
-    if (message) put(out, message);
+    const which = db ? db.id : "new";
+    const out = results();
+    // Put in once the box is on the page, so that a status drawn with the list is still heard.
+    if (message) requestAnimationFrame(() => put(out, message));
     const input = (name, attrs) => ui.h("input", { class: "input", name, value: d[name] ?? "", autocomplete: "off", spellcheck: "false", ...attrs });
     const form = ui.h("form", { class: "form" },
       ui.h("div", { class: "fields" },
-        field("Name", input("name", { placeholder: "Sales" }), "What you call it. You pick it by this name when you start a dashboard."),
+        field("Name", input("name", { placeholder: "Sales", "data-key": `name:${which}` }), "What you call it. You pick it by this name when you start a dashboard."),
         field("Host", input("host", { placeholder: "db.example.com" })),
         field("Port", input("port", { inputmode: "numeric", class: "input short" })),
         field("Database", input("dbname")),
@@ -112,8 +132,8 @@ window.studioSettings = (() => {
         field("Schemas", input("schemas", { value: (d.schemas || []).join(", ") }), "Comma-separated. Usually just public.")),
       out);
     const filled = () => ({ ...values(form), id: d.id });
-    const test = ui.h("button", { class: "btn", type: "button" }, "Test connection");
-    const keep = ui.h("button", { class: "btn primary", type: "submit" }, db ? "Save" : "Add");
+    const test = ui.h("button", { class: "btn", type: "button", "data-key": `test:${which}` }, "Test connection");
+    const keep = ui.h("button", { class: "btn primary", type: "submit", "data-key": `save:${which}` }, db ? "Save" : "Add");
     test.addEventListener("click", () => act(test, async () => {
       const reply = await ui.post("/api/settings/check", { what: "database", values: filled() });
       if (!reply.ok) return void put(out, note("bad", reply.error || "Could not connect."));
@@ -129,34 +149,17 @@ window.studioSettings = (() => {
         took(reply);
         openDb = reply.id;
         const now = saved.databases.find((one) => one.id === reply.id);
-        redraw(note("ok", now && now.tables ? "Saved." : "Saved. Now read the table list, so Claude knows what there is."));
+        // A database just added is Saved from now on: the focus goes to its own Save.
+        redraw(note("ok", now && now.tables ? "Saved." : "Saved. Now read the table list, so Claude knows what there is."), `save:${reply.id}`);
         redrawMetabase();
         refreshDone();
       });
     });
     const foot = [ui.h("span", { class: "field-hint" }, db ? tablesLine(db) : ""), ui.h("span", { class: "grow" })];
     if (db) {
-      const remove = ui.h("button", { class: "btn ghost danger", type: "button" }, "Remove");
-      let sure = false;
-      remove.addEventListener("click", async () => {
-        if (!sure) {
-          // The first press asks; only the second removes.
-          sure = true;
-          remove.textContent = `Remove “${db.name}”? Press again`;
-          return void setTimeout(() => {
-            sure = false;
-            remove.textContent = "Remove";
-          }, 5000);
-        }
-        const reply = await ui.post("/api/settings/database/remove", { database: db.id });
-        if (trouble(reply)) return void put(out, note("bad", trouble(reply)));
-        took(reply);
-        openDb = null;
-        redraw();
-        redrawMetabase();
-        refreshDone();
-      });
-      const read = ui.h("button", { class: "btn", type: "button", title: "Reads table and column names from the catalog. No table's rows are read." }, "Read the table list");
+      const remove = ui.h("button", { class: "btn ghost danger", type: "button", "data-key": `remove:${which}` }, "Remove");
+      remove.addEventListener("click", () => askRemove(db, remove, out, redraw));
+      const read = ui.h("button", { class: "btn", type: "button", "data-key": `read:${which}`, title: "Reads table and column names from the catalog. No table's rows are read." }, "Read the table list");
       read.addEventListener("click", () => act(read, async () => {
         const reply = await ui.post("/api/settings/tables", { database: db.id });
         if (trouble(reply)) return void put(out, note("bad", trouble(reply)));
@@ -166,15 +169,43 @@ window.studioSettings = (() => {
       }));
       foot.push(remove, read);
     } else if ((saved.databases || []).length) {
-      foot.push(ui.h("button", { class: "btn ghost", type: "button", onclick: () => { openDb = null; redraw(); } }, "Cancel"));
+      foot.push(ui.h("button", { class: "btn ghost", type: "button", "data-key": "cancel:new", onclick: () => { openDb = null; redraw(null, "add"); } }, "Cancel"));
     }
     form.append(ui.h("div", { class: "form-foot" }, foot, test, keep));
     return form;
   }
 
+  // Remove, asked in the dialog: it names the database, and the studio refuses while a dashboard is on it.
+  function askRemove(db, button, out, redraw) {
+    const keep = ui.closeButton("Keep it");
+    const go = ui.h("button", { class: "btn danger", type: "button" }, `Remove “${db.name}”`);
+    go.addEventListener("click", () => act(go, async () => {
+      const reply = await ui.post("/api/settings/database/remove", { database: db.id });
+      if (trouble(reply)) {
+        return void ui.showDialog(ui.h("h2", null, `“${db.name}” stays`), ui.h("p", null, trouble(reply).join(" ")),
+          ui.liveFooter(ui.closeButton("Close")));
+      }
+      took(reply);
+      openDb = null;
+      ui.closeDialog();
+      redraw(null, "add");
+      redrawMetabase();
+      refreshDone();
+      ui.announce(`“${db.name}” was removed from the studio.`);
+    }));
+    ui.dialog.addEventListener("close", () => ui.focusFirst(button), { once: true });   // gone once removed: then Add has it
+    ui.showDialog(
+      ui.h("h2", null, `Remove “${db.name}”?`),
+      ui.h("p", null, "The studio forgets its connection, its saved password and its table list. The database itself is not touched. "
+        + "It cannot be removed while a dashboard is on it: remove those dashboards first."),
+      ui.liveFooter(keep, go));
+  }
+
   function databasesSection() {
     const box = ui.h("div", { class: "db-list" });
-    const draw = (message) => {
+    // Drawn afresh each time: the focus goes back to the control with the same data-key (or the one asked for).
+    const draw = (message, focus) => {
+      const had = box.contains(document.activeElement) ? document.activeElement.dataset.key : null;
       const all = saved.databases || [];
       if (!all.length) openDb = "new";
       const rows = all.map((db) => {
@@ -186,15 +217,18 @@ window.studioSettings = (() => {
         return ui.h("div", { class: "db" },
           ui.h("div", { class: "db-row" },
             ui.h("div", { class: "db-text" }, ui.h("strong", null, db.name), ui.h("span", { class: "field-hint" }, `${db.dbname} on ${db.host} · ${tablesLine(db)}`)),
-            ui.h("button", { class: "btn small", type: "button", "aria-expanded": String(open), onclick: toggle }, open ? "Close" : "Edit")),
+            ui.h("button", { class: "btn small", type: "button", "data-key": `toggle:${db.id}`, "aria-expanded": String(open),
+              "aria-label": `${open ? "Close" : "Edit"} “${db.name}”`, onclick: toggle }, open ? "Close" : "Edit")),
           open ? databaseForm(db, draw, message) : null);
       });
       const add = openDb === "new"
         ? ui.h("div", { class: "db" },
             all.length ? ui.h("div", { class: "db-row" }, ui.h("div", { class: "db-text" }, ui.h("strong", null, "Another database"))) : null,
             databaseForm(null, draw, message))
-        : ui.h("div", { class: "db-row" }, ui.h("button", { class: "btn", type: "button", onclick: () => { openDb = "new"; draw(); } }, ui.icon("plus", 15), "Add a database"));
+        : ui.h("div", { class: "db-row" }, ui.h("button", { class: "btn", type: "button", "data-key": "add", onclick: () => { openDb = "new"; draw(null, "name:new"); } }, ui.icon("plus", 15), "Add a database"));
       put(box, rows, add);
+      const wanted = focus || had;
+      if (wanted) ui.focusFirst(box.querySelector(`[data-key="${CSS.escape(wanted)}"]`), box.querySelector('[data-key="add"]'), box.querySelector('[data-key="name:new"]'));
     };
     draw();
     return section("database", "table", "Databases", "The PostgreSQL databases your dashboards read. Each dashboard uses one of them. Every query runs in a read-only transaction, one at a time.", box);
@@ -225,7 +259,7 @@ window.studioSettings = (() => {
   }
 
   function metabaseSection() {
-    const out = ui.h("div", { class: "results" });
+    const out = results();
     const choices = ui.h("div", { class: "fields" });
     const form = ui.h("form", { class: "form" },
       ui.h("div", { class: "fields" },
@@ -280,7 +314,7 @@ window.studioSettings = (() => {
   // ---------- claude ----------
 
   function claudeSection() {
-    const out = ui.h("div", { class: "results" });
+    const out = results();
     const form = ui.h("form", { class: "form" },
       ui.h("div", { class: "fields" },
         field("Model", text("model", { placeholder: "Account default", list: "models" }), "Empty uses the account's default. “sonnet” uses less of the limit."),
@@ -307,7 +341,7 @@ window.studioSettings = (() => {
   // ---------- time zone and limits ----------
 
   function limitsSection() {
-    const out = ui.h("div", { class: "results" });
+    const out = results();
     const number = (name, attrs) => text(name, { inputmode: "numeric", class: "input short", ...attrs });
     const form = ui.h("form", { class: "form" },
       ui.h("div", { class: "fields" },
