@@ -112,12 +112,21 @@ published yet), Live, "Changes not live", or what became of it in Metabase (tras
 deleted, moved).
 
 **Dashboard settings.** The gear beside Go live opens them. **Versions** lists the states
-of the dashboard's files, before and after each of Claude's changes, and **Go back**
-returns to one. Remove is there too.
+of the dashboard's files: before and after each of Claude's changes, and changes made to
+them outside the studio. **Go back** returns to one, and is kept as a version itself, so
+it can be undone; "Live" marks the version Metabase was last sent. The newest 50 are
+kept, and the live one. Remove is there too.
 
-**The Trash**, beside Settings. A removed dashboard or draft, and a cleared conversation
-(the bin in Ask Claude), go there with their attached files. **Put back**, **Delete
-forever** and **Empty trash** each ask first and name what goes. Metabase is not touched.
+**The Trash**, beside Settings. A removed dashboard (with its conversation, attached files
+and versions) or draft, and a cleared conversation ("Clear this conversation" at the top
+of Ask Claude), go there. **Put back** returns one as it was; **Delete forever** and
+**Empty trash** ask first and name what goes. Metabase is not touched.
+
+![The Trash, with a removed dashboard and a draft](docs/img/trash.png)
+
+**Keyboard and screen readers.** The focus stays where it is while the page updates,
+dialogs are named by their heading, and Claude's steps, removals and results are read
+out. On a laptop (900 to 1180 px wide) Ask Claude opens as a drawer from its button.
 
 ## How it stays safe
 
@@ -185,7 +194,7 @@ in Settings tells you when a key can reach more than you meant.
 |---|---|---|
 | `dashboards/` | Your dashboards: `dashboard.json` and one `.sql` per card | No |
 | `attachments/` | The files you attached in Ask Claude, a folder per conversation | No |
-| `data/` | Settings, saved secrets, the table list, conversations, cached results, logs, the Trash | No |
+| `data/` | Settings, saved secrets, the table list, conversations, cached results, logs, the Trash (`data/trash/`), versions (`data/history/`) | No |
 | `examples/sample/` | The example dashboard a new install starts with | Yes |
 
 The database passwords and the Metabase key are stored encrypted for your Windows user

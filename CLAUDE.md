@@ -45,7 +45,13 @@ only when the user presses Go live in the app and confirms. `metabase.json` in a
 published dashboard's folder is Go live's own record. Never edit or delete it.
 
 **Settings and secrets are the user's.** Never read `data/`. It holds the settings, the
-saved password and key, the conversations and the logs.
+saved password and key, the conversations, the logs, the Trash (`data/trash/`) and every
+dashboard's versions (`data/history/<slug>/`).
+
+**Every change is kept.** The studio keeps a version of a dashboard's `dashboard.json`
+and `.sql` files before and after each run in the app, and when it sees a change made
+outside it (a terminal session's, say). The user can go back from the dashboard's gear.
+Removing a dashboard moves it to the Trash; only the user deletes anything for good.
 
 **Stay in this folder.** Never read or edit anything outside it.
 
@@ -212,5 +218,27 @@ secrets in its environment.
 The attachments module (`app/attachments.py`, `static/attach.js`, `static/attach.css`) is
 shared with the other studios: never edit it here, and keep every copy identical.
 
+The page: `static/app.js` is the shell and hands its helpers (the `ui` object: dialogs,
+`announce`, `whileBusy`, `focusFirst`, `drawIfChanged`, `go`, `ask`, `build`, `retitle`) to
+`settings.js`, `trash.js` (the Trash page), `versions.js` (the gear's Dashboard settings) and
+`progress.js` (Claude's steps, Try again and Carry on, the title marks), which load before
+it. Styles: `app.css`, then `pages.css`. Keep the focus where it is on every redraw, name
+each dialog by its heading, and never use `disabled` on a busy button (`whileBusy`).
+`app/trash.py` and `app/history.py` hold the Trash and the Versions on the server.
+
 Nothing personal belongs in git: `data/`, `dashboards/` and `attachments/` are ignored
 on purpose.
+
+## Done on 27 Oct 2026
+
+- The Trash, beside Settings: removed dashboards and drafts and cleared conversations, with
+  Put back, and Delete forever and Empty trash, which are confirmed and name what goes.
+  Remove and Clear now move things there whole (Clear used to empty the conversation).
+- Versions in the gear's Dashboard settings: before and after each Claude run, and changes
+  made outside the studio; Go back, which can itself be undone; Now and Live marks.
+- Ask Claude: the steps drawn in place with "Still on this step", Try again, Carry on and
+  Build again after a run that did not finish, the window's title marked Working, Ready or
+  Needs you, and the box keeping each conversation's words and files.
+- Focus kept through polls, a screen-reader log and announcements, dialogs named by their
+  heading, AA greys and focus rings, a drawer for Ask Claude on a laptop, cards in reading
+  order on a phone. One studio per port.
