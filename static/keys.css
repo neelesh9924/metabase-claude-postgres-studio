@@ -40,3 +40,13 @@ kbd { display: inline-block; padding: 1px 7px; border: 1px solid var(--line-2); 
 .palette-empty { padding: 28px 12px; text-align: center; color: var(--text-3); }
 .palette-foot { flex: none; display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 9px 16px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--text-3); }
 .palette-foot kbd { margin-right: 2px; }
+
+/* ───────────── the panel's edge ───────────── */
+body.resizing { cursor: col-resize; user-select: none; }
+.assist-resize { position: absolute; top: 0; bottom: 0; left: -4px; width: 8px; z-index: 30; cursor: col-resize; touch-action: none; }
+.assist-resize::after { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 2px; background: transparent; transition: background .12s; }
+.assist-resize:hover::after, .assist-resize:focus-visible::after, body.resizing .assist-resize::after { background: var(--accent); }
+.assist-resize:focus-visible { outline: none; }
+/* the New dashboard screen is the conversation itself; below 900 px the panel sits under the page, as wide as it */
+.app.on-new .assist-resize { display: none; }
+@media (max-width: 899.98px) { .assist-resize { display: none; } }
