@@ -105,6 +105,8 @@ read two databases.
   it (in a terminal, `python studio.py info` lists the ids), and never change it on an
   existing dashboard: the app puts it back. A dashboard without the line is on the first
   database.
+- The user can rename a dashboard from its settings: that changes `name` only. Keep the
+  folder, the slug and the keys as they are.
 - `key`: a-z, 0-9, `_`. The card's query is the file `<key>.sql` beside it. Go live
   recognises a card by its key: keep the key when a card changes; a new key means a new
   card in Metabase and the old one in its trash.
@@ -219,16 +221,23 @@ The attachments module (`app/attachments.py`, `static/attach.js`, `static/attach
 shared with the other studios: never edit it here, and keep every copy identical.
 
 The page: `static/app.js` is the shell and hands its helpers (the `ui` object: dialogs,
-`announce`, `whileBusy`, `focusFirst`, `drawIfChanged`, `go`, `ask`, `build`, `retitle`) to
-`settings.js`, `trash.js` (the Trash page), `versions.js` (the gear's Dashboard settings) and
-`progress.js` (Claude's steps, Try again and Carry on, the title marks), which load before
-it. `palette.js` (Ctrl+K, the keys, the skip links) gets `ui` through
+`announce`, `whileBusy`, `focusFirst`, `drawIfChanged`, `copyButton`, `go`, `ask`, `build`,
+`retitle`) to `settings.js`, `trash.js` (the Trash page), `versions.js` (the gear's Dashboard
+settings: Name, Versions, Remove) and `progress.js` (Claude's steps, Try again and Carry on,
+the title marks), which load before it. `static/time.js` loads first: `window.studioTime`
+is the one way the page writes the studio's own times (`when` at the start of a line,
+`inline` mid-sentence, `full` for a title, `tag` for a `<time>` that keeps its words true).
+The server sends only the ISO `at`, and the data's own dates stay `fmtDate`'s, in
+Metabase's look. `palette.js` (Ctrl+K, the keys, the skip links) gets `ui` through
 `studioPalette.start(ui)` and reads what it offers from the page; `resize.js` (the Ask
 Claude panel's edge, `--assist-w`) starts itself. Styles: `app.css`, then `pages.css`, and
 `keys.css` (the palette, the keys and the panel's edge) last. Keep the focus where it is
 on every redraw, name each dialog by its heading, and never use `disabled` on a busy
 button (`whileBusy`).
 `app/trash.py` and `app/history.py` hold the Trash and the Versions on the server.
+`specs.write_dashboard` is the one writer of a dashboard.json the studio changes itself
+(keys in their order, indent 2, UTF-8 as it is, a temporary file then `os.replace`):
+`assign` and the rename use it.
 
 Nothing personal belongs in git: `data/`, `dashboards/` and `attachments/` are ignored
 on purpose.
@@ -246,5 +255,8 @@ on purpose.
 - Focus kept through polls, a screen-reader log and announcements, dialogs named by their
   heading, AA greys and focus rings, a drawer for Ask Claude on a laptop, cards in reading
   order on a phone. One studio per port.
-- The keys of the owner's other studios: Ctrl+K's palette, Alt+N, Ctrl+/, Alt+↑ / Alt+↓, ?
-  and two skip links; the Ask Claude panel's edge, dragged or moved with the arrow keys.
+- Second pass. The keys of the owner's other studios: Ctrl+K's palette, Alt+N, Ctrl+/,
+  Alt+↑ / Alt+↓, ? and two skip links; the Ask Claude panel's edge, dragged or moved with
+  the arrow keys. One way of writing times (static/time.js); Copy on a card's SQL, on
+  Claude's replies and on the Metabase link; Rename in Dashboard settings, kept as a
+  version.

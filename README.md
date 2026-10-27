@@ -103,7 +103,10 @@ while), and Stop ends it at once. A request that stopped or failed offers **Try 
 dashboard) or **Build again**. The window's title starts with "● Working" during a run;
 one that ends while you are in another window leaves "✓ Ready" or "! Needs you" there
 until you come back. Each card has Table, SQL and Refresh tools (move the mouse over the
-card).
+card). The SQL view has Copy, and so has each of Claude's replies and plans; the square
+button beside Open in Metabase copies the dashboard's Metabase link. Times read as "Just
+now", "5:43 pm", "Yesterday, 5:43 pm" or "27 Oct, 5:28 pm" (with the year when it is not
+this one); the pointer on one shows the full date.
 
 **Go live** publishes the open dashboard to Metabase. It first shows what will happen,
 and nothing is sent until you confirm. A later Go live updates the same dashboard. The
@@ -111,11 +114,14 @@ label beside the title says where a dashboard stands: "Not live" (built here, no
 published yet), Live, "Changes not live", or what became of it in Metabase (trashed,
 deleted, moved).
 
-**Dashboard settings.** The gear beside Go live opens them. **Versions** lists the states
-of the dashboard's files: before and after each of Claude's changes, and changes made to
-them outside the studio. **Go back** returns to one, and is kept as a version itself, so
-it can be undone; "Live" marks the version Metabase was last sent. The newest 50 are
-kept, and the live one. Remove is there too.
+**Dashboard settings.** The gear beside Go live opens them. **Name** renames the dashboard:
+only its title changes, its folder and its address stay, and the rename is kept as a
+version, so Go back undoes it. Metabase keeps the old name until the next Go live, which
+renames it there too. **Versions** lists the states of the dashboard's files: before and
+after each of Claude's changes, and changes made to them outside the studio. **Go back**
+returns to one, and is kept as a version itself, so it can be undone; "Live" marks the
+version Metabase was last sent. The newest 50 are kept, and the live one. Remove is there
+too.
 
 **The Trash**, beside Settings. A removed dashboard (with its conversation, attached files
 and versions) or draft, and a cleared conversation ("Clear this conversation" at the top
