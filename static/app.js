@@ -1651,10 +1651,13 @@
     if (firstLook && !data.setup.database) showPage("settings");
     else if (firstLook) reopen();
     // A draft that was in the list and no longer is has been built or removed. One just begun may not be in it yet:
-    // this answer can have left the server before the first message arrived.
+    // this answer can have left the server before the first message arrived. One just built stays open until
+    // updateAssist has opened its dashboard.
+    const job = data.assistant.job;
+    const built = !!job && job.kind === "build" && job.status === "done" && job.key === state.draft && state.assist.followed !== job.id;
     if (state.draft && state.drafts.some((d) => d.key === state.draft)) {
       state.listed = state.draft;
-    } else if (state.draft && state.listed === state.draft) {
+    } else if (state.draft && state.listed === state.draft && !built) {
       state.draft = null;
       if (state.page === "new") history.replaceState(null, "", "#~new");
     }

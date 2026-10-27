@@ -278,7 +278,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .plan-foot { display: flex; align-items: center; gap: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
 
 .activity { padding: 12px 14px; border-radius: var(--radius); background: var(--surface-2); font-size: 12.5px; }
-.activity-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-weight: 600; }
+.activity-head { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; font-weight: 600; }
 .activity-time { margin-left: auto; font-weight: 400; color: var(--text-3); font-variant-numeric: tabular-nums; }
 .activity-note { margin: 0 0 8px 16px; color: var(--text-3); font-variant-numeric: tabular-nums; }
 .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }

@@ -150,7 +150,9 @@ class ShowTest(PageCase):
     def test_a_removed_dashboard_takes_its_word_with_it(self):
         self.ask("/api/show", {"slug": "ops", "key": "people", "columns": ["Phone"], "show": True})
         self.ask("/api/run", {"slug": "ops", "key": "people"})
-        self.assertEqual(self.ask("/api/remove", {"slug": "ops"}), {"ok": True})
+        reply = self.ask("/api/remove", {"slug": "ops"})
+        self.assertEqual((reply["ok"], reply["name"]), (True, "Ops"))
+        self.assertTrue(reply["key"].startswith("ops-"))
         self.assertEqual(specs.shown("ops"), {})
         self.assertFalse((config.CACHE_DIR / "shown").exists())
 

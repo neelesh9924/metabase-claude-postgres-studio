@@ -27,7 +27,7 @@ import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 
-from . import attachments, config, schema, specs
+from . import attachments, config, history, schema, specs
 from .claude import MCP_SERVER, ClaudeRefused, ClaudeRunner, RunRequest, ToolPolicy
 
 DRAFT = "draft-"     # the key of a conversation about a dashboard that is not built yet starts so
@@ -245,7 +245,6 @@ def _versions(slug, moment, note=""):
     """Tells Versions that a run starts ("before") or has ended ("after") on a dashboard's files. A failure is logged,
     never raised: the run goes on whatever Versions could keep."""
     try:
-        from . import history
         history.on_run(slug, moment, note)
     except Exception as exc:  # noqa: BLE001 (Versions must never stop a run)
         _log(f"versions {moment} {slug}: {exc!r}")

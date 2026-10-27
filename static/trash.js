@@ -57,7 +57,7 @@ window.studioTrash = (() => {
     if (line && line.fresh) {
       // The button pressed may be gone with its row: the focus is left on what it did, and that is spoken.
       line.fresh = false;
-      ui.focusFirst(box.querySelector(".trash-said"), box.querySelector(".trash-row button"), box.querySelector("#emptyTrash"));
+      ui.focusFirst(box.querySelector(".trash-said"), box.querySelector(".trash-row button"), box.querySelector("#emptyAll"));
       ui.announce(line.text, { urgent: line.kind === "bad" });
     }
   }
@@ -67,7 +67,7 @@ window.studioTrash = (() => {
     const total = entries.reduce((sum, e) => sum + (e.size || 0), 0);
     const counted = KINDS.map(([kind, one, many]) => [entries.filter((e) => e.kind === kind).length, one, many])
       .filter(([n]) => n).map(([n, one, many]) => plural(n, one, many));
-    const empty = h("button", { class: "btn danger", type: "button", id: "emptyTrash", "data-focus": "empty", disabled: !entries.length },
+    const empty = h("button", { class: "btn danger", type: "button", id: "emptyAll", "data-focus": "empty", disabled: !entries.length },
       icon("trash", 15), "Empty trash…");
     empty.addEventListener("click", () => askDelete(ui, box, entries, true));
     let open = null;
