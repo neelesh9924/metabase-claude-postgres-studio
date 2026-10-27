@@ -106,9 +106,11 @@ window.studioSettings = (() => {
 
   // ---------- databases ----------
 
+  // "12 tables on record, read yesterday, 5:43 pm.", the time in the studio's one way (static/time.js).
   function tablesLine(db) {
     const t = db && db.tables;
-    return t ? `${t.tables.toLocaleString("en-US")} tables on record, read ${t.generated_at.replace("T", " at ").slice(0, 19)}.` : "The table list has not been read yet.";
+    return t ? [`${t.tables.toLocaleString("en-US")} tables on record, read `, window.studioTime.tag(t.generated_at, "inline"), "."]
+      : ["The table list has not been read yet."];
   }
 
   // One database's form: an existing one to change, or an empty one to add. redraw(message, focus) draws the whole list
@@ -216,7 +218,7 @@ window.studioSettings = (() => {
         };
         return ui.h("div", { class: "db" },
           ui.h("div", { class: "db-row" },
-            ui.h("div", { class: "db-text" }, ui.h("strong", null, db.name), ui.h("span", { class: "field-hint" }, `${db.dbname} on ${db.host} · ${tablesLine(db)}`)),
+            ui.h("div", { class: "db-text" }, ui.h("strong", null, db.name), ui.h("span", { class: "field-hint" }, `${db.dbname} on ${db.host} · `, tablesLine(db))),
             ui.h("button", { class: "btn small", type: "button", "data-key": `toggle:${db.id}`, "aria-expanded": String(open),
               "aria-label": `${open ? "Close" : "Edit"} “${db.name}”`, onclick: toggle }, open ? "Close" : "Edit")),
           open ? databaseForm(db, draw, message) : null);

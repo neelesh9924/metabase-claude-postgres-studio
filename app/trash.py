@@ -20,7 +20,7 @@ import stat
 import sys
 from datetime import datetime
 
-from . import config, history, paths, specs
+from . import config, paths, specs
 from .assistant import DRAFT, Assistant, new_draft_key
 
 _STAMPED = re.compile(r"^(.+)-(\d{8}-\d{6})(?:-\d+)?$")   # <what>-<YYYYmmdd-HHMMSS>, -2 for a second in one second
@@ -124,7 +124,7 @@ def _entry(path, listing):
             removed = datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
         except OSError:
             removed = ""
-    out = {"key": path.name, "kind": "other", "name": path.name, "at": removed, "when": history.label(removed),
+    out = {"key": path.name, "kind": "other", "name": path.name, "at": removed,
            "size": 0, "database_name": "", "cards": 0, "live": False, "messages": 0, "files": 0,
            "note": "It is not something the studio can put back. It can only be deleted."}
     if _is_link(path):   # never followed: what it points to is not the trash's

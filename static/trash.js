@@ -87,7 +87,9 @@ window.studioTrash = (() => {
   // Each button's name starts with the words it shows, then whose it is: "Put back, Orders".
   function row(ui, box, entry) {
     const { h, icon } = ui;
-    const where = [`Removed ${entry.when}`, sizeOf(entry.size || 0), entry.kind === "draft" ? "a draft" : null,
+    // "Removed just now", in the studio's one way of writing a time (static/time.js), which keeps it true.
+    const removed = entry.at ? ["Removed ", window.studioTime.tag(entry.at, "inline"), " · "] : [];
+    const where = [sizeOf(entry.size || 0), entry.kind === "draft" ? "a draft" : null,
       entry.database_name ? `on ${entry.database_name}` : null,
       entry.kind === "dashboard" && entry.live ? "was live: it stays in Metabase" : null].filter(Boolean).join(" · ");
     const holds = [entry.kind === "dashboard" ? plural(entry.cards || 0, "card", "cards") : null,
@@ -105,7 +107,7 @@ window.studioTrash = (() => {
       icon(KIND_ICON[entry.kind] || "file", 16),
       h("div", { class: "trash-text" },
         h("b", { title: entry.name }, entry.name),
-        h("small", null, where),
+        h("small", null, removed, where),
         holds ? h("small", null, holds) : null,
         entry.note ? h("small", { class: "trash-note" }, entry.note) : null),
       h("div", { class: "trash-actions" }, back, forever));

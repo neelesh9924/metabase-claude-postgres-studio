@@ -38,8 +38,10 @@ window.studioProgress = (() => {
     return job.steps && job.quiet >= QUIET ? `Still on this step · ${took(job.quiet)}` : `Step ${job.steps || 0}`;
   }
 
+  // A step's time is its bare clock ("17:41:03"), written the studio's one way (static/time.js): "5:41 pm".
   function stepEl(entry, key) {
-    return ui.h("li", { "data-n": entry.n, "data-key": key }, ui.h("time", null, entry.at), entry.text, entry.detail ? ui.h("small", null, entry.detail) : null);
+    return ui.h("li", { "data-n": entry.n, "data-key": key }, window.studioTime.tag(entry.at), entry.text,
+      entry.detail ? ui.h("small", null, entry.detail) : null);
   }
 
   function drawActivity(box, job, key) {
