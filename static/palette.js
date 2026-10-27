@@ -83,7 +83,8 @@ window.studioPalette = window.studioPalette || (() => {
     button($("refreshAll"), "Refresh data", "refresh", "", "run queries again reload");
     button($("goLive"), "Go live…", "upload", "", "publish metabase");
     button($("openLive"), "Open in Metabase", "external", "", "published view");
-    button($("dashSettings"), "Dashboard settings", "gear", "", "versions go back remove history");
+    button($("copyLive"), "Copy the Metabase link", "copy", "", "url address share published");
+    button($("dashSettings"), "Dashboard settings", "gear", "", "rename name versions go back remove history");
     if (shown($("askText"))) action("Ask Claude", "sparkle", focusAsk, "Ctrl+/", "chat question change");
     const show = $("showAssist");
     if (usable(show) && show.getAttribute("aria-expanded") !== "true") button(show, "Show Ask Claude", "panel", "", "panel chat drawer");

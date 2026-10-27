@@ -80,6 +80,7 @@
     search: ["M10.5 4a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13z", "M15.5 15.5L20 20"],
     x: ["M6 6l12 12", "M18 6L6 18"],
     history: ["M3.5 12a8.5 8.5 0 1 0 2.6-6.1", "M3 4v4.5h4.5", "M12 8v4.5l3 2"],
+    keyboard: ["M3 6h18v12H3z", "M7 10h.01", "M11 10h.01", "M15 10h.01", "M7 14h10"],
   };
 
   function icon(name, size = 16) {
@@ -2254,4 +2255,5 @@
   });
   renderActions();
   poll();
+  window.studioPalette.start(ui);
 })();
