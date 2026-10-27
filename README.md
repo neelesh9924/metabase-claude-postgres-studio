@@ -106,7 +106,9 @@ until you come back. Each card has Table, SQL and Refresh tools (move the mouse 
 card). The SQL view has Copy, and so has each of Claude's replies and plans; the square
 button beside Open in Metabase copies the dashboard's Metabase link. Times read as "Just
 now", "5:43 pm", "Yesterday, 5:43 pm" or "27 Oct, 5:28 pm" (with the year when it is not
-this one); the pointer on one shows the full date.
+this one); the pointer on one shows the full date. A card whose query failed or looks heavy
+offers **Ask Claude to fix**: it adds a request naming the card and its error (or asking for
+a lighter query) after the words already in Ask Claude's box, and waits for you to send it.
 
 **Go live** publishes the open dashboard to Metabase. It first shows what will happen,
 and nothing is sent until you confirm. A later Go live updates the same dashboard. The

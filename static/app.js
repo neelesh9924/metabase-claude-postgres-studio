@@ -777,7 +777,8 @@
     el.append(body);
     if (view === "sql") return void body.append(sqlView(card));
     if (failed) {
-      return void body.append(h("div", { class: "problem" }, h("strong", null, "The query failed"), h("pre", null, entry.error)));
+      return void body.append(h("div", { class: "problem" }, h("strong", null, "The query failed"), h("pre", null, entry.error),
+        fixButton(card, `failed with this error:\n${firstLines(entry.error)}\nPlease fix its query.`)));
     }
     if (heavy) {
       const cost = Math.round(entry.heavy.cost).toLocaleString("en-US");
@@ -788,7 +789,13 @@
           { class: "problem" },
           h("strong", null, "Not run: this query looks heavy"),
           h("span", null, `Estimated cost ${cost}, limit ${limit}.`),
-          h("button", { class: "btn small", type: "button", "data-tool": "anyway", onclick: () => enqueue(key, true, true) }, "Run anyway")
+          h(
+            "div",
+            { class: "problem-actions" },
+            h("button", { class: "btn small", type: "button", "data-tool": "anyway", onclick: () => enqueue(key, true, true) }, "Run anyway"),
+            fixButton(card, `was not run: its query looks heavy (estimated cost ${cost}, limit ${limit}). `
+              + "Please rewrite it as a lighter query that shows the same thing.")
+          )
         )
       );
     }
@@ -811,6 +818,32 @@
       return void body.append(h("div", { class: "placeholder" }, "This chart needs a number column."));
     }
     mount(key, box, option);
+  }
+
+  // The first lines of a query's error, for a request to Claude: at most three, each cut at 300 characters.
+  function firstLines(error) {
+    return String(error).trim().split(/\r?\n/).slice(0, 3)
+      .map((line) => (line.length > 300 ? `${line.slice(0, 300)}…` : line.trimEnd())).join("\n");
+  }
+
+  // Ask Claude to fix, on a card whose query failed or looks heavy: the request, naming the card, goes into the box after
+  // the words already there, and the panel (or the drawer) opens with the caret at its end. It is never sent from here:
+  // the owner reads it and sends it.
+  function fixButton(card, what) {
+    const request = `The card "${card.name}" (${card.key}.sql) ${what}`;
+    const use = () => {
+      const box = $("askText");
+      const words = box.value.trimEnd();
+      if (!box.value.includes(request)) box.value = words ? `${words}\n\n${request}` : request;
+      unrefuse();
+      showAssist(true);
+      if (focusBox()) {
+        box.setSelectionRange(box.value.length, box.value.length);
+        box.scrollTop = box.scrollHeight;
+      }
+      announce(`A request to fix ${card.name} is in the box. Nothing is sent until you send it.`);
+    };
+    return h("button", { class: "btn small", type: "button", "data-tool": "fix", onclick: use }, icon("sparkle", 14), "Ask Claude to fix");
   }
 
   // The card's query as its file has it, under a head with the file's name and Copy, as the owner's other studios put

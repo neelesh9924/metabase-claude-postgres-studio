@@ -260,3 +260,6 @@ on purpose.
   the arrow keys. One way of writing times (static/time.js); Copy on a card's SQL, on
   Claude's replies and on the Metabase link; Rename in Dashboard settings, kept as a
   version.
+- Ask Claude to fix, on a card whose query failed or looks heavy: it adds a request naming
+  the card and the first lines of its error (or asking for a lighter query) after the box's
+  words, opens the panel or drawer, and leaves sending to the user.

@@ -209,6 +209,7 @@ button.flag:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   justify-content: safe center; gap: 8px; padding: 8px; overflow: auto; text-align: center; color: var(--text-3); }
 .problem strong { color: var(--text); }
 .problem pre { max-width: 100%; margin: 0; font: 12px/1.45 var(--mono); color: var(--bad); white-space: pre-wrap; text-align: left; }
+.problem-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }   /* Run anyway, Ask Claude to fix */
 
 .scalar { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 3px; text-align: center; }
