@@ -1,4 +1,4 @@
-/* The Trash page (static/trash.js) and a dashboard's settings dialog (static/versions.js), after app.css.
+/* The Trash page (static/trash.js) and a dashboard's settings dialog (static/versions.js: its name, its versions), after app.css.
    Only app.css's tokens, so light and dark follow it. Rows wrap at 760 px and below. */
 
 /* ───────────── shared ───────────── */
@@ -24,6 +24,10 @@
 .modal.dash-settings { width: min(640px, calc(100vw - 32px)); }
 .modal.dash-settings h2 { margin-bottom: 4px; overflow-wrap: anywhere; }
 .modal.dash-settings h2 + p { margin-top: 0; }
+.name-zone { display: grid; gap: 5px; margin-top: 16px; }
+.rename-row { display: flex; gap: 8px; }
+.rename-row .input { flex: 1; min-width: 0; }
+.rename-row .btn { flex: none; }
 .versions-zone { display: grid; gap: 8px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
 .versions-zone h3 { font: 600 14px var(--display); }
 .modal .versions-zone p { margin-top: 0; }

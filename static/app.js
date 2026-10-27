@@ -103,13 +103,15 @@
   }
 
   // ---------- formatting ----------
+  // The data's own dates and times, as Metabase writes them ("Oct 27, 2026, 5:43 PM"), so the preview reads as the
+  // published dashboard will. The studio's own times (a reply's, a card's last run) are static/time.js's.
 
   function parseDate(text) {
     const m = /^(\d{4})-(\d\d)-(\d\d)(?:[T ](\d\d):(\d\d))?/.exec(String(text));
     return m ? new Date(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0)) : null;
   }
 
-  function clock(d) {
+  function dataClock(d) {
     const hours = d.getHours() % 12 || 12;
     return `${hours}:${String(d.getMinutes()).padStart(2, "0")} ${d.getHours() < 12 ? "AM" : "PM"}`;
   }
@@ -118,7 +120,7 @@
     const d = parseDate(text);
     if (!d) return String(text);
     const day = `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
-    return withTime && (d.getHours() || d.getMinutes()) ? `${day}, ${clock(d)}` : day;
+    return withTime && (d.getHours() || d.getMinutes()) ? `${day}, ${dataClock(d)}` : day;
   }
 
   function columnSettings(card, name) {
@@ -174,10 +176,10 @@
     const monthly = dates.length > 1 && !hasTime && dates.every((d) => d.getDate() === 1);
     return dates.map((d) => {
       if (monthly) return `${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
-      if (hasTime && oneDay) return clock(d);
+      if (hasTime && oneDay) return dataClock(d);
       let label = `${MONTHS[d.getMonth()]} ${d.getDate()}`;
       if (!oneYear) label += `, ${d.getFullYear()}`;
-      if (hasTime) label += ` ${clock(d)}`;
+      if (hasTime) label += ` ${dataClock(d)}`;
       return label;
     });
   }
@@ -186,16 +188,12 @@
     return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
   }
 
-  function fmtRanAt(text) {
-    const d = parseDate(text);
-    if (!d) return "";
-    const time = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-    return d.toDateString() === new Date().toDateString() ? time : `${d.getDate()} ${MONTHS[d.getMonth()]}, ${time}`;
-  }
+  const studioTime = window.studioTime;
 
-  function metaText(result) {
+  // What a card's last run gave: "12 rows · 31 ms".
+  function runWords(result) {
     const rows = `${result.row_count.toLocaleString("en-US")}${result.truncated ? "+" : ""} ${result.row_count === 1 ? "row" : "rows"}`;
-    return `${rows} · ${fmtDuration(result.ms)} · as of ${fmtRanAt(result.ran_at)}`;
+    return `${rows} · ${fmtDuration(result.ms)}`;
   }
 
   // ---------- charts ----------
@@ -544,6 +542,33 @@
 
   const isOff = (button) => button.getAttribute("aria-disabled") === "true";
 
+  // A copy button, as in the owner's other studios: a copy icon and a label; pressed, "Copied" and the copied look for
+  // a moment, said to a screen reader. square: the icon alone, named by the label, and a check for that moment instead.
+  // text: the words, or a function that gives them when it is pressed.
+  const COPIED_MS = 1400;
+  function copyButton(text, label = "Copy", small = true, square = false) {
+    const button = h("button", { class: `btn${small ? " small" : ""}${square ? " square" : ""}`, type: "button",
+      "aria-label": square ? label : null, title: square ? label : null }, icon("copy", 14), square ? null : h("span", null, label));
+    let timer = 0;
+    const look = (copied) => {
+      button.classList.toggle("copied", copied);
+      if (square) button.firstChild.replaceWith(icon(copied ? "check" : "copy", 14));
+      else button.lastChild.textContent = copied ? "Copied" : label;
+    };
+    button.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(String(typeof text === "function" ? text() : text));
+      } catch {
+        return void announce("Could not copy. Select the text and press Ctrl+C.", { urgent: true });
+      }
+      clearTimeout(timer);
+      look(true);
+      announce("Copied");
+      timer = setTimeout(() => look(false), COPIED_MS);
+    });
+    return button;
+  }
+
   // Moves the focus to the first of the candidates (elements, or selectors for one) that is in the page, shown and not
   // disabled; one that can't take the focus by itself is given tabindex="-1" first. Returns the element, or null.
   function focusFirst(...candidates) {
@@ -731,7 +756,7 @@
           "header",
           { class: "card-head" },
           h("h2", { class: "card-title", title: card.name }, card.name),
-          result ? h("span", { class: "card-meta" }, metaText(result)) : null
+          result ? h("span", { class: "card-meta" }, `${runWords(result)} · as of `, studioTime.tag(result.ran_at, "inline")) : null
         )
       );
       if (flags.some(Boolean)) el.append(h("div", { class: "card-flags" }, flags));
@@ -742,13 +767,14 @@
         { class: "card-tools" },
         card.display === "table" ? null : toolButton("table", "Table", view === "table", "Show the rows behind this card", () => setView(key, "table")),
         toolButton("code", "SQL", view === "sql", "Show the query", () => setView(key, "sql")),
-        toolButton("refresh", "Refresh", null, result ? `Run again. Last run: ${metaText(result)}` : "Run the query", () => enqueue(key, true, false))
+        toolButton("refresh", "Refresh", null, result ? `Run again. Last run: ${runWords(result)} · ${studioTime.full(result.ran_at)}` : "Run the query",
+          () => enqueue(key, true, false))
       )
     );
 
     const body = h("div", { class: "card-body" });
     el.append(body);
-    if (view === "sql") return void body.append(h("pre", { class: "sql" }, card.sql || "The SQL file is missing."));
+    if (view === "sql") return void body.append(sqlView(card));
     if (failed) {
       return void body.append(h("div", { class: "problem" }, h("strong", null, "The query failed"), h("pre", null, entry.error)));
     }
@@ -784,6 +810,19 @@
       return void body.append(h("div", { class: "placeholder" }, "This chart needs a number column."));
     }
     mount(key, box, option);
+  }
+
+  // The card's query as its file has it, under a head with the file's name and Copy, as the owner's other studios put
+  // Copy above what it copies. Both keep the focus when the card is drawn again (data-tool); the query takes it so
+  // that the keyboard can scroll it.
+  function sqlView(card) {
+    if (!card.sql) return h("pre", { class: "sql" }, "The SQL file is missing.");
+    const copy = copyButton(card.sql);
+    copy.setAttribute("aria-label", `Copy the SQL of “${card.name || card.key}”`);
+    copy.dataset.tool = "copy";
+    return h("div", { class: "sql-view" },
+      h("div", { class: "sql-head" }, h("span", { class: "sql-file" }, `${card.key}.sql`), copy),
+      h("pre", { class: "sql", tabindex: "0", "data-tool": "sql" }, card.sql));
   }
 
   const pending = () => Object.values(state.cards).some((entry) => entry.queued || entry.loading);
@@ -903,8 +942,15 @@
       $("status").replaceChildren(...chips);
     });
     $("openLive").hidden = !spec.live || spec.metabase === "trashed" || spec.metabase === "gone";
+    copyLive.hidden = $("openLive").hidden;
     renderActions();
   }
+
+  // Copy the Metabase link: right after Open in Metabase, shown exactly when it is.
+  const copyLive = copyButton(() => (state.spec && state.spec.url) || "", "Copy the Metabase link", false, true);
+  copyLive.id = "copyLive";
+  copyLive.hidden = true;
+  $("openLive").after(copyLive);
 
   function renderDashboard() {
     const grid = $("grid");
@@ -1055,14 +1101,6 @@
     });
   }
 
-  // "3:49 pm" today, "27 Oct, 3:49 pm" before; words the studio already wrote as a time are kept as they are.
-  function shortTime(text) {
-    const d = parseDate(text);
-    if (!d) return String(text);
-    const time = `${d.getHours() % 12 || 12}:${String(d.getMinutes()).padStart(2, "0")} ${d.getHours() < 12 ? "am" : "pm"}`;
-    return d.toDateString() === new Date().toDateString() ? time : `${d.getDate()} ${MONTHS[d.getMonth()]}, ${time}`;
-  }
-
   function renderDrafts(job) {
     const drafts = state.drafts;
     $("draftsLabel").hidden = !drafts.length;
@@ -1072,7 +1110,8 @@
       const stands = busyHere ? (job.kind === "build" ? "Claude is building" : "Claude is planning")
         : d.last === "failed" ? "Plan failed" : d.last === "stopped" ? "Stopped" : d.plan ? "Plan ready" : "No plan yet";
       const lead = severalDatabases() && d.database_name ? `${d.database_name} · ` : "";
-      return { key: d.key, title: d.title, sub: `${lead}${stands}${d.at ? ` · ${shortTime(d.at)}` : ""}`,
+      // Worked out at every look, so "just now" turns into the time by itself.
+      return { key: d.key, title: d.title, sub: `${lead}${stands}${d.at ? ` · ${studioTime.inline(d.at)}` : ""}`,
         kind: busyHere ? "busy" : d.last === "failed" ? "bad" : d.plan && !d.last ? "warn" : "",
         current: state.page === "new" && state.draft === d.key };
     });
@@ -1223,10 +1262,17 @@
     if (message.role === "info") return h("div", { class: "msg info", "data-id": message.id }, message.text);
     const meta = message.meta ? h("div", { class: "msg-meta" }, message.meta) : null;
     if (message.role === "error") return h("div", { class: "msg error", "data-id": message.id }, icon("alert", 16), h("div", null, message.text, meta));
+    // The head line, as in the owner's other studios: who, when, and Copy for the reply's words.
+    const copy = message.text ? copyButton(message.text) : null;
+    if (copy) {
+      copy.classList.add("ghost");
+      copy.setAttribute("aria-label", "Copy this reply from Claude");
+    }
     return h(
       "div",
       { class: "msg claude", "data-id": message.id },
-      h("div", { class: "msg-who" }, icon("sparkle", 14), message.role === "plan" ? "Claude’s plan" : "Claude"),
+      h("div", { class: "msg-who" }, icon("sparkle", 14), message.role === "plan" ? "Claude’s plan" : "Claude",
+        message.at ? studioTime.tag(message.at) : null, copy),
       message.text ? h("div", { class: "msg-text" }, message.text) : null,
       message.role === "plan" ? planEl(message, latestPlan) : null,
       meta
@@ -1291,7 +1337,7 @@
       });
       box.append(...messages.slice(log.ids.length).map((m, j) => messageEl(m, log.ids.length + j === latest)));
     } else {
-      const fresh = h("div", { id: "messages", role: "log", "aria-label": box.getAttribute("aria-label") });
+      const fresh = h("div", { id: "messages", role: "log", "aria-label": box.getAttribute("aria-label"), "aria-relevant": "additions" });
       fresh.append(...messages.map((m, i) => messageEl(m, i === latest)));
       box.replaceWith(fresh);
     }
@@ -2097,7 +2143,7 @@
     get: (path) => api(path),
     post,
     dialog: $("liveDialog"),
-    showDialog, closeDialog, liveList, liveFooter, closeButton,
+    showDialog, closeDialog, liveList, liveFooter, closeButton, copyButton,
     announce, whileBusy, focusFirst, drawIfChanged,
     refresh: () => poll(),
     go,

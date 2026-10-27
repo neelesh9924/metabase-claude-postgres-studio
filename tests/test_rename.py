@@ -63,12 +63,14 @@ class RenameTest(StudioCase):
         self.call("GET", "/api/dashboard?slug=ops")   # its first version, as opened here
         (self.folder / "a.sql").write_text("select 2 as a", encoding="utf-8")   # a change made outside the studio
         self.rename("Daily orders")
-        listed = self.call("GET", "/api/versions?slug=ops")["versions"]
+        reply = self.call("GET", "/api/versions?slug=ops")
+        listed = reply["versions"]
         self.assertEqual([(v["by"], v["note"]) for v in listed],
                          [("you", "Renamed"), ("outside", "Changed outside the studio"), ("studio", "As first opened here")])
-        self.assertTrue(listed[0]["now"])
+        self.assertEqual((listed[0]["now"], reply["name"]), (True, "Daily orders"))
         self.assertEqual(self.call("POST", "/api/versions/back", {"slug": "ops", "id": listed[1]["id"]}), {"ok": True, "changed": True})
         self.assertEqual(self.raw()["name"], DASHBOARD["name"])
+        self.assertEqual(self.call("GET", "/api/versions?slug=ops")["name"], DASHBOARD["name"], "the dialog's heading follows")
         self.assertEqual((self.folder / "a.sql").read_text(encoding="utf-8"), "select 2 as a", "only the rename is undone")
 
     def test_a_name_must_be_one_line_of_1_to_120_characters_and_new(self):

@@ -130,6 +130,7 @@ p { margin: 0; }
 .btn.square { width: var(--h); padding: 0; }
 .btn.wide { width: 100%; justify-content: flex-start; }
 .btn[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
+.btn.copied, .btn.copied:hover:not(:disabled, [aria-disabled="true"]) { color: var(--ok); }   /* Copy, for a moment after it is pressed */
 .segmented { display: flex; gap: 6px; flex-wrap: wrap; }
 
 .input { width: 100%; height: 34px; padding: 0 10px; border: 1px solid var(--field-border); border-radius: var(--radius-s);
@@ -139,6 +140,8 @@ p { margin: 0; }
 .input:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; }
 .input::placeholder { color: var(--text-3); }
 .input.short { max-width: 140px; }
+.input[aria-invalid="true"] { border-color: var(--bad); }
+.field-error { font-size: 12.5px; font-weight: 600; color: var(--bad); }
 
 .chip { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px; border-radius: 999px;
   background: var(--surface-3); color: var(--text-2); font-size: 12px; font-weight: 600; white-space: nowrap; }
@@ -227,6 +230,11 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .table-note { padding: 6px 10px; font-size: 12px; color: var(--text-3); }
 .sql { position: absolute; inset: 0; margin: 0; padding: 12px; overflow: auto; border-radius: var(--radius-s);
   background: var(--surface-2); color: var(--text); font: 12px/1.55 var(--mono); white-space: pre; }
+.sql:focus-visible { outline-offset: -2px; }
+.sql-view { position: absolute; inset: 0; display: flex; flex-direction: column; border-radius: var(--radius-s); background: var(--surface-2); }
+.sql-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 6px 6px 0 12px; }
+.sql-file { flex: 1; min-width: 0; overflow: hidden; color: var(--text-3); font: 11.5px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.sql-view .sql { position: static; flex: 1; min-height: 0; padding-top: 6px; background: none; }
 
 .empty { display: grid; justify-items: center; gap: 6px; padding: 110px 16px; text-align: center; color: var(--text-2); }
 .empty-mark { width: 56px; height: 56px; margin-bottom: 10px; display: grid; place-items: center; border-radius: 16px;
@@ -252,6 +260,8 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .msg-files { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 92%; }
 .bubble { max-width: 92%; padding: 9px 13px; border-radius: 14px 14px 4px 14px; background: var(--accent-soft); white-space: pre-wrap; }
 .msg-who { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; font-size: 12px; font-weight: 600; color: var(--accent-ink); }
+.msg-who time { margin-left: auto; font-weight: 400; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.msg-who .btn { --h: 24px; padding: 0 8px; }
 .msg-text { white-space: pre-wrap; }
 .msg-meta { margin-top: 6px; font-size: 11.5px; color: var(--text-3); }
 .msg.info { font-size: 12.5px; color: var(--text-3); text-align: center; }

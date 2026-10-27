@@ -240,7 +240,8 @@ class Handler(BaseHTTPRequestHandler):
             if slug not in specs.slugs():
                 return self._json({"error": "No such dashboard."}, 404)
             self._catch_up(slug)
-            return self._json({"versions": history.listing(slug)})
+            # Its name as it is now, which a Go back may have changed: Dashboard settings' heading follows it.
+            return self._json({"versions": history.listing(slug), "name": (specs.summary(slug) or {}).get("name", slug)})
         if url.path == "/api/settings":
             return self._json({"settings": settings.public(), "setup": setup_state()})
         return self._json({"error": "Not found."}, 404)
