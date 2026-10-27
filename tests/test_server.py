@@ -63,6 +63,14 @@ class ServerTest(StudioCase):
         response, _ = self.ask("POST", "/api/stop", {}, Cookie=self.cookie, Origin=self.origin)
         self.assertEqual(response.status, 200)
 
+    def test_one_studio_per_port(self):
+        """A second server on the same port would break the one-query-at-a-time rule."""
+        from app import server
+
+        with self.assertRaises(OSError):
+            server.make_server("another-token")
+        self.assertEqual(self.ask("GET", "/health")[0].status, 200)
+
     def test_tool_server_needs_a_running_request(self):
         message = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
         self.assertEqual(self.ask("POST", "/mcp", message)[0].status, 401)
