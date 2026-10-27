@@ -15,14 +15,18 @@ import json
 import mimetypes
 import os
 import secrets
+import socket
 import sys
 import webbrowser
+from datetime import datetime
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, urlparse
 
-from . import attachments, checks, config, db, filters, guard, mcp, metabase, paths, schema, settings, specs
+from . import attachments, checks, config, db, filters, guard, history, mcp, metabase, paths, schema, settings, specs, trash
 from .assistant import _KEY as CONVERSATION, Assistant
+
+WORKING = "Claude is working on it. Stop it or wait."
 
 COOKIE = "studio_session"
 _TYPES = {".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml"}
@@ -74,6 +78,20 @@ class Handler(BaseHTTPRequestHandler):
     @property
     def studio(self):
         return self.server.studio
+
+    def _working_on(self, name):
+        """Whether the running Claude works on this dashboard or conversation."""
+        job = self.studio.assistant.job
+        return bool(job and job.status == "running" and name in (job.slug, job.key))
+
+    def _catch_up(self, slug):
+        """Keep the changes made to a dashboard outside the studio as a version, unless Claude is writing it now."""
+        if self._working_on(slug):
+            return
+        try:
+            history.catch_up(slug)
+        except Exception as exc:  # noqa: BLE001  the dashboard is shown all the same
+            print(f"{datetime.now():%Y-%m-%d %H:%M:%S} versions of {slug!r} not caught up: {exc!r}", file=sys.stderr, flush=True)
 
     # ---- replies ----
 
@@ -180,6 +198,7 @@ class Handler(BaseHTTPRequestHandler):
             spec = specs.load(query.get("slug", [""])[0])
             if spec is None:
                 return self._json({"error": "No such dashboard."}, 404)
+            self._catch_up(spec["slug"])
             try:
                 picked = json.loads(query.get("values", ["null"])[0])
             except ValueError:
@@ -214,6 +233,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"key": key, "messages": messages})
         if url.path.startswith("/api/file/"):
             return self._attachment(url.path[len("/api/file/"):])
+        if url.path == "/api/trash":
+            return self._json({"entries": trash.entries()})
+        if url.path == "/api/versions":
+            slug = query.get("slug", [""])[0]
+            if slug not in specs.slugs():
+                return self._json({"error": "No such dashboard."}, 404)
+            self._catch_up(slug)
+            return self._json({"versions": history.listing(slug)})
         if url.path == "/api/settings":
             return self._json({"settings": settings.public(), "setup": setup_state()})
         return self._json({"error": "Not found."}, 404)
@@ -240,6 +267,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._show(body)
         if path == "/api/remove":
             return self._remove(body)
+        if path == "/api/trash/back":
+            return self._trash_back(body)
+        if path in ("/api/trash/delete", "/api/trash/empty"):
+            return self._trash_delete(path, body)
+        if path == "/api/versions/back":
+            return self._version_back(body)
         if path.startswith("/api/golive") or path == "/api/open":
             return self._go_live(path, body)
         if path.startswith("/api/settings"):
@@ -311,14 +344,18 @@ class Handler(BaseHTTPRequestHandler):
         return self._json({"options": [row[0] for row in result["rows"]]})
 
     def _remove(self, body):
-        """Take a dashboard out of the studio. Metabase is not touched."""
+        """Take a dashboard out of the studio, into the Trash: all of it, or nothing. Metabase is not touched."""
         slug = body.get("slug")
-        job = self.studio.assistant.job
-        if job and job.status == "running" and slug in (job.slug, job.key):
+        if self._working_on(slug):
             return self._json({"error": "Claude is still working on this dashboard."})
-        showed = bool(specs.shown(slug)) if slug in specs.slugs() else False
+        found = specs.summary(slug) if slug in specs.slugs() else None
+        if found is None:
+            return self._json({"error": "No such dashboard."})
+        showed = bool(specs.shown(slug))
         try:
             moved = specs.remove(slug)
+        except PermissionError:
+            return self._json({"error": f"A file of “{found['name']}” is open in another program. Close it and try again."})
         except OSError:
             return self._json({"error": "The folder could not be moved just now. Try again."})
         if moved is None:
@@ -327,7 +364,44 @@ class Handler(BaseHTTPRequestHandler):
         metabase.forget(slug)
         if showed:
             db.cache_forget_shown()
-        return self._json({"ok": True})
+        return self._json({"ok": True, "key": moved.name, "name": found["name"]})
+
+    def _trash_back(self, body):
+        """One entry out of the Trash, back where it came from."""
+        job = self.studio.assistant.job
+        busy = tuple(name for name in (job.slug, job.key) if name) if job and job.status == "running" else ()
+        try:
+            back = trash.put_back(body.get("key"), busy)
+        except trash.TrashError as exc:
+            return self._json({"error": str(exc)})
+        self.studio.assistant.rev += 1   # the page fetches the conversations again
+        return self._json({"ok": True, **back})
+
+    def _trash_delete(self, path, body):
+        """Delete forever (the entries named) or Empty trash, once the user has confirmed it."""
+        if body.get("confirmed") is not True:
+            return self._json({"error": "Confirm first."})
+        keys = body.get("keys")
+        if keys is not None and (not isinstance(keys, list) or len(keys) > 5000 or not all(isinstance(k, str) for k in keys)):
+            return self._json({"error": "Bad request."}, 400)
+        try:
+            done = trash.empty(keys) if path == "/api/trash/empty" else trash.delete(keys or [])
+        except trash.TrashError as exc:
+            return self._json({"error": str(exc)})
+        return self._json({"ok": True, **done})
+
+    def _version_back(self, body):
+        """A dashboard's files back as one of its versions had them."""
+        slug = body.get("slug")
+        if not isinstance(slug, str) or slug not in specs.slugs():
+            return self._json({"error": "No such dashboard."})
+        if self._working_on(slug):
+            return self._json({"error": WORKING})
+        try:
+            version, changed = history.go_back(slug, body.get("id"))
+        except history.HistoryError as exc:
+            return self._json({"error": str(exc)})
+        return self._json({"ok": True, "when": history.label(version["at"]), "changed": changed})
 
     def _go_live(self, path, body):
         slug = body.get("slug")
@@ -402,6 +476,14 @@ class Handler(BaseHTTPRequestHandler):
 
 class Server(ThreadingHTTPServer):
     daemon_threads = True
+    # One studio per port. Windows lets a second socket bind a port opened with SO_REUSEADDR, and the
+    # one-query-at-a-time rule holds inside one server only.
+    allow_reuse_address = False
+
+    def server_bind(self):
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
     def handle_error(self, request, client_address):
         # A browser that closes a connection early is not worth a traceback in the log.

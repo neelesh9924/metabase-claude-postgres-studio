@@ -5,9 +5,13 @@ one database, named by "database" in its dashboard.json; without it, to the firs
 """
 import hashlib
 import json
+import os
 import re
 import shutil
+import threading
+import time
 from datetime import datetime
+from pathlib import PurePath
 
 from . import config, db, filters, guard
 
@@ -16,6 +20,38 @@ DATA_DISPLAYS = {"scalar", "smartscalar", "line", "bar", "area", "combo", "row",
 TEXT_DISPLAYS = {"heading", "text"}
 _KEY = re.compile(r"^[a-z0-9_]+$")
 _SLUG = re.compile(r"^[a-z0-9_-]+$")
+# The dashboards' folders, their versions and the trash change one thing at a time, under this lock.
+LOCK = threading.RLock()
+TRIES = 10
+
+
+def trash_dir():
+    return config.DATA_DIR / "trash"
+
+
+def history_dir(slug):
+    """Where a dashboard's versions are kept (app/history.py). Remove takes them along, Put back brings them."""
+    return config.DATA_DIR / "history" / slug
+
+
+def replace(source, target):
+    """os.replace, tried again for a moment while Windows says a file is in use: a poll reading a file holds it
+    for an instant. Raises the last PermissionError when it stays in use, open in another program."""
+    for attempt in range(TRIES):
+        try:
+            return os.replace(source, target)
+        except PermissionError:
+            if attempt == TRIES - 1:
+                raise
+            time.sleep(min(0.1, 0.02 * 1.5 ** attempt))
+
+
+def free_path(parent, stem, suffix=""):
+    """parent/<stem><suffix>, or <stem>-2<suffix>, -3... when that is taken (two removed in one second)."""
+    path, n = parent / f"{stem}{suffix}", 2
+    while path.exists():
+        path, n = parent / f"{stem}-{n}{suffix}", n + 1
+    return path
 
 
 def slugs():
@@ -39,17 +75,28 @@ def ensure_sample():
 
 
 def remove(slug):
-    """Take a dashboard out of the studio. Its folder moves to data/trash, to be put back by hand if wanted.
+    """Take a dashboard out of the studio: its folder moves to data/trash in one step, so all of it moves or
+    none of it does, and its versions go with it (history/). The Trash can put it back.
 
-    Returns where it went, or None when there is no such dashboard.
+    Returns where it went, or None when there is no such dashboard. Raises OSError, PermissionError while a
+    file of it is open in another program, with the dashboard left whole and in place.
     """
-    if slug not in slugs():
-        return None
-    target = config.DATA_DIR / "trash" / f"{slug}-{datetime.now():%Y%m%d-%H%M%S}"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(config.DASHBOARDS_DIR / slug), str(target))
-    _shown_file(slug).unlink(missing_ok=True)
-    return target
+    with LOCK:
+        if slug not in slugs():
+            return None
+        folder = config.DASHBOARDS_DIR / slug
+        target = free_path(trash_dir(), f"{slug}-{datetime.now():%Y%m%d-%H%M%S}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        replace(folder, target)
+        kept = history_dir(slug)
+        if kept.is_dir() and not (target / "history").exists():
+            try:
+                replace(kept, target / "history")
+            except OSError:
+                replace(target, folder)
+                raise
+        _shown_file(slug).unlink(missing_ok=True)
+        return target
 
 
 def assign(slug, database):
@@ -77,14 +124,23 @@ def version(slug):
     return stamp.hexdigest()[:16]
 
 
-def content_hash(slug):
-    """Changes when the dashboard itself changes: its dashboard.json or a query."""
-    folder = config.DASHBOARDS_DIR / slug
+def content_files(slug):
+    """{name: bytes} of the dashboard itself: its dashboard.json and every query."""
+    return {path.name: path.read_bytes() for path in (config.DASHBOARDS_DIR / slug).iterdir()
+            if path.is_file() and (path.name == "dashboard.json" or path.suffix == ".sql")}
+
+
+def hash_files(files):
+    """content_hash of these {name: bytes}, from a folder or from a kept version: in the folder's own order."""
     stamp = hashlib.sha256()
-    for path in sorted(folder.iterdir()):
-        if path.is_file() and (path.name == "dashboard.json" or path.suffix == ".sql"):
-            stamp.update(path.name.encode() + b"|" + path.read_bytes() + b"|")
+    for name, body in sorted(files.items(), key=lambda item: PurePath(item[0])):
+        stamp.update(name.encode() + b"|" + body + b"|")
     return stamp.hexdigest()[:16]
+
+
+def content_hash(slug):
+    """Changes when the dashboard itself changes: its dashboard.json or a query. Go live records it."""
+    return hash_files(content_files(slug))
 
 
 def published(slug):

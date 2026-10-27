@@ -1,6 +1,7 @@
 import http.client
 import json
 import unittest
+from datetime import datetime
 from unittest import mock
 
 from support import StudioCase, serve, watching_shares
@@ -50,12 +51,33 @@ class RemoveTest(StudioCase):
         self.make()
         assistant._add("ops", "user", "make it blue")
         with mock.patch("urllib.request.urlopen", side_effect=AssertionError("Metabase must not be called")):
-            self.assertEqual(self.post("/api/remove", {"slug": "ops"}), {"ok": True})
+            reply = self.post("/api/remove", {"slug": "ops"})
         self.assertEqual(specs.slugs(), [])
         trashed = next((self.tmp / "data" / "trash").iterdir())
+        self.assertEqual(reply, {"ok": True, "key": trashed.name, "name": "Ops"})
         self.assertIn("make it blue", (trashed / "conversation.json").read_text(encoding="utf-8"))
         self.assertEqual(assistant.thread("ops"), [])
         self.assertEqual(self.post("/api/remove", {"slug": "ops"}), {"error": "No such dashboard."})
+
+    def test_a_file_open_in_another_program_leaves_it_whole(self):
+        serve(self)
+        self.make()
+        before = sorted(p.name for p in (self.tmp / "dashboards" / "ops").iterdir())
+        with mock.patch("os.replace", side_effect=PermissionError(32, "The file is in use by another process")):
+            reply = self.post("/api/remove", {"slug": "ops"})
+        self.assertEqual(reply, {"error": "A file of “Ops” is open in another program. Close it and try again."})
+        self.assertEqual(specs.slugs(), ["ops"])
+        self.assertEqual(sorted(p.name for p in (self.tmp / "dashboards" / "ops").iterdir()), before)
+        self.assertFalse((self.tmp / "data" / "trash").exists() and any((self.tmp / "data" / "trash").iterdir()))
+
+    def test_two_in_one_second_both_go_to_the_trash(self):
+        moment = mock.Mock(now=mock.Mock(return_value=datetime(2026, 10, 27, 15, 49, 12)))
+        with mock.patch.object(specs, "datetime", moment):
+            self.make()
+            first = specs.remove("ops")
+            self.make()
+            second = specs.remove("ops")
+        self.assertEqual((first.name, second.name), ("ops-20261027-154912", "ops-20261027-154912-2"))
 
     def test_not_while_claude_is_working_on_it(self):
         assistant = serve(self).studio.assistant
