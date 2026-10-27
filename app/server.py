@@ -273,6 +273,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._trash_delete(path, body)
         if path == "/api/versions/back":
             return self._version_back(body)
+        if path == "/api/rename":
+            return self._rename(body)
         if path.startswith("/api/golive") or path == "/api/open":
             return self._go_live(path, body)
         if path.startswith("/api/settings"):
@@ -398,10 +400,36 @@ class Handler(BaseHTTPRequestHandler):
         if self._working_on(slug):
             return self._json({"error": WORKING})
         try:
-            version, changed = history.go_back(slug, body.get("id"))
+            _, changed = history.go_back(slug, body.get("id"))
         except history.HistoryError as exc:
             return self._json({"error": str(exc)})
-        return self._json({"ok": True, "when": history.label(version["at"]), "changed": changed})
+        return self._json({"ok": True, "changed": changed})
+
+    def _rename(self, body):
+        """A dashboard's new name, from its settings: the "name" in its dashboard.json and nothing else. Its folder,
+        slug, cards, queries and database stay. Kept as a version, after any change made outside the studio."""
+        slug = body.get("slug")
+        if not isinstance(slug, str) or slug not in specs.slugs():
+            return self._json({"error": "No such dashboard."})
+        if self._working_on(slug):
+            return self._json({"error": WORKING})
+        with specs.LOCK:
+            try:
+                raw, name = specs.renamed(slug, body.get("name"))
+                history.catch_up(slug)
+                specs.write_dashboard(slug, raw)
+            except specs.SpecError as exc:
+                return self._json({"error": str(exc)})
+            except PermissionError:
+                return self._json({"error": "Its dashboard.json is open in another program. Close it and try again."})
+            except OSError:
+                return self._json({"error": "It could not be renamed just now. Try again."})
+            try:
+                history.record(slug, "you", "Renamed")
+            except Exception as exc:  # noqa: BLE001  the name is written; only its version is missing
+                print(f"{datetime.now():%Y-%m-%d %H:%M:%S} version of {slug!r} (renamed) not kept: {exc!r}", file=sys.stderr,
+                      flush=True)
+        return self._json({"ok": True, "name": name})
 
     def _go_live(self, path, body):
         slug = body.get("slug")

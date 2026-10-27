@@ -64,6 +64,8 @@ class TrashTest(StudioCase):
         self.assertEqual({k: entry[k] for k in ("key", "kind", "name", "cards", "live", "messages", "files")},
                          {"key": removed["key"], "kind": "dashboard", "name": "Orders", "cards": 1, "live": True,
                           "messages": 1, "files": 1})
+        self.assertRegex(entry["at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d$")
+        self.assertNotIn("when", entry, "the page writes the time from at, its one way")
         rev = self.assistant.rev
         back = self.post("/api/trash/back", {"key": removed["key"]})
         self.assertEqual(back, {"ok": True, "kind": "dashboard", "name": "Orders", "slug": "orders", "moved": False})

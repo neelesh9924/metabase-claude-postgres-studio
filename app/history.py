@@ -24,6 +24,7 @@ from . import config, paths, specs
 BY = ("claude", "you", "outside", "studio")
 KEEP = 50
 _ID = re.compile(r"^\d{8}-\d{6}-\d{6}-[0-9a-f]{4}$")
+MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 
 class HistoryError(Exception):
@@ -35,14 +36,16 @@ def new_id():
     return f"{datetime.now():%Y%m%d-%H%M%S-%f}-{secrets.token_hex(2)}"
 
 
-def label(at):
-    """A time as the user reads it: 27 Oct, 3:49 pm."""
+def label(at, now=None):
+    """A time in the page's own absolute words (static/time.js), for the note a Go back leaves, which is read later:
+    27 Oct, 3:49 pm, and 27 Oct 2025, 3:49 pm when it is not this year. The page writes every other time itself."""
     try:
         when = datetime.fromisoformat(at)
     except (TypeError, ValueError):
         return str(at or "")
+    year = "" if when.year == (now or datetime.now()).year else f" {when.year}"
     hour = when.hour % 12 or 12
-    return f"{when.day} {when:%b}, {hour}:{when:%M} {'am' if when.hour < 12 else 'pm'}"
+    return f"{when.day} {MONTHS[when.month - 1]}{year}, {hour}:{when.minute:02d} {'am' if when.hour < 12 else 'pm'}"
 
 
 def _safe(name):
@@ -253,6 +256,6 @@ def listing(slug):
             is_now = not seen_now and version["content"] == now
             is_live = not seen_live and live is not None and version["content"] == live
             seen_now, seen_live = seen_now or is_now, seen_live or is_live
-            out.append({"id": version["id"], "at": version["at"], "when": label(version["at"]), "by": version["by"],
-                        "note": version["note"], "files": len(version["files"]), "now": is_now, "live": is_live})
+            out.append({"id": version["id"], "at": version["at"], "by": version["by"], "note": version["note"],
+                        "files": len(version["files"]), "now": is_now, "live": is_live})
         return out

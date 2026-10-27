@@ -2,6 +2,7 @@ import http.client
 import io
 import json
 import unittest
+from datetime import datetime
 from unittest import mock
 
 from support import StudioCase, serve, watching_shares
@@ -88,7 +89,8 @@ class HistoryTest(StudioCase):
         history.record("ops", "claude", "Changed a")
         listed = history.listing("ops")
         self.assertEqual([(v["by"], v["now"], v["live"]) for v in listed], [("claude", True, False), ("studio", False, True)])
-        self.assertEqual(listed[0]["when"], history.label(listed[0]["at"]))
+        self.assertNotIn("when", listed[0], "the page writes the time from at, its one way")
+        self.assertRegex(listed[0]["at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d$")
 
     def test_the_newest_versions_stay_and_the_live_one(self):
         self.make()
@@ -117,9 +119,14 @@ class HistoryTest(StudioCase):
         self.assertEqual(self.read("metabase.json"), published)
         self.assertFalse((config.DASHBOARDS_DIR / "escape.sql").exists())
 
-    def test_a_label_reads_as_the_user_reads_a_time(self):
-        self.assertEqual(history.label("2026-10-27T15:49:12"), "27 Oct, 3:49 pm")
-        self.assertEqual(history.label("2026-10-07T00:05:00"), "7 Oct, 12:05 am")
+    def test_a_label_reads_as_the_page_writes_a_time(self):
+        """The page's absolute words (static/time.js), with the year when it is not this year."""
+        now = datetime(2026, 10, 27, 18, 0)
+        self.assertEqual(history.label("2026-10-27T15:49:12", now), "27 Oct, 3:49 pm")
+        self.assertEqual(history.label("2026-10-07T00:05:00", now), "7 Oct, 12:05 am")
+        self.assertEqual(history.label("2026-09-03T12:00:00", now), "3 Sep, 12:00 pm")
+        self.assertEqual(history.label("2025-10-27T17:28:00", now), "27 Oct 2025, 5:28 pm")
+        self.assertEqual(history.label("not a time", now), "not a time")
 
 
 class VersionRoutesTest(StudioCase):
@@ -147,7 +154,7 @@ class VersionRoutesTest(StudioCase):
         listed = self.call("GET", "/api/versions?slug=ops")["versions"]
         self.assertEqual([v["by"] for v in listed], ["outside", "studio"])
         reply = self.call("POST", "/api/versions/back", {"slug": "ops", "id": first["id"]})
-        self.assertEqual(reply, {"ok": True, "when": first["when"], "changed": True})
+        self.assertEqual(reply, {"ok": True, "changed": True})
         self.assertEqual((self.folder / "a.sql").read_text(encoding="utf-8"), "select 1 as a")
 
     def test_not_while_claude_works_on_it_and_never_outside_its_history(self):

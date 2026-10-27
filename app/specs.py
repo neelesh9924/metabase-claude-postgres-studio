@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import threading
 import time
@@ -23,6 +24,11 @@ _SLUG = re.compile(r"^[a-z0-9_-]+$")
 # The dashboards' folders, their versions and the trash change one thing at a time, under this lock.
 LOCK = threading.RLock()
 TRIES = 10
+NAME_MAX = 120
+
+
+class SpecError(Exception):
+    """Why a dashboard's dashboard.json was not changed, in words for the page."""
 
 
 def trash_dir():
@@ -99,18 +105,60 @@ def remove(slug):
         return target
 
 
-def assign(slug, database):
-    """Record which database a dashboard belongs to, in its dashboard.json. Does nothing when it already says so."""
+def write_dashboard(slug, raw):
+    """The one writer of a dashboard's dashboard.json: its keys in their order, indented by 2, in UTF-8 as it is
+    (no \\u escapes). Written whole to a temporary file beside it, then swapped in, so nobody reads half of it."""
     path = config.DASHBOARDS_DIR / slug / "dashboard.json"
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        body = (json.dumps(raw, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    except UnicodeEncodeError:   # a lone surrogate (a \ud800 in the file) has no UTF-8: it stays an escape
+        body = (json.dumps(raw, indent=2) + "\n").encode("utf-8")
+    draft = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+    try:
+        draft.write_bytes(body)
+        replace(draft, path)
+    finally:
+        draft.unlink(missing_ok=True)
+
+
+def assign(slug, database):
+    """Record which database a dashboard belongs to, in its dashboard.json. Does nothing when it already says so.
+    A new "database" goes right after the name and the description."""
+    path = config.DASHBOARDS_DIR / slug / "dashboard.json"
+    with LOCK:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not database or not isinstance(raw, dict) or raw.get("database") == database:
+            return
+        if "database" not in raw:
+            lead = {key: raw[key] for key in ("name", "description") if key in raw}
+            raw = {**lead, "database": database, **{key: value for key, value in raw.items() if key not in lead}}
+        raw["database"] = database
+        write_dashboard(slug, raw)
+
+
+def renamed(slug, name):
+    """(dashboard.json with a new name and every other key as it was, that name). The name is trimmed, and must be
+    one line of 1 to NAME_MAX characters that is not the name already. Raises SpecError, also when dashboard.json
+    cannot be read: a file that is not a JSON object is never written over."""
+    name = name.strip() if isinstance(name, str) else ""
+    if not name:
+        raise SpecError("Give the dashboard a name.")
+    if len(name.splitlines()) > 1:
+        raise SpecError("Keep the name to one line.")
+    if len(name) > NAME_MAX:
+        raise SpecError(f"Keep the name under {NAME_MAX} characters.")
+    try:
+        raw = json.loads((config.DASHBOARDS_DIR / slug / "dashboard.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return
-    if not database or not isinstance(raw, dict) or raw.get("database") == database:
-        return
-    lead = {key: raw[key] for key in ("name", "description") if key in raw}
-    rest = {key: value for key, value in raw.items() if key not in lead and key != "database"}
-    path.write_text(json.dumps({**lead, "database": database, **rest}, indent=2) + "\n", encoding="utf-8")
+        raw = None
+    if not isinstance(raw, dict):
+        raise SpecError("Its dashboard.json could not be read, so nothing was changed. Fix the file first.")
+    if isinstance(raw.get("name"), str) and raw["name"].strip() == name:
+        raise SpecError("It has that name already.")
+    return ({**raw, "name": name} if "name" in raw else {"name": name, **raw}), name
 
 
 def version(slug):
