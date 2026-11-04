@@ -1,0 +1,449 @@
+"""Dashboards on disk: dashboards/<slug>/dashboard.json plus one <key>.sql per card.
+
+Positions use Metabase's grid: 24 columns, rows of equal height. A dashboard belongs to
+one database, named by "database" in its dashboard.json; without it, to the first one.
+"""
+import hashlib
+import json
+import os
+import re
+import secrets
+import shutil
+import threading
+import time
+from datetime import datetime
+from pathlib import PurePath
+
+from . import config, db, filters, guard
+
+GRID_COLUMNS = 24
+DATA_DISPLAYS = {"scalar", "smartscalar", "line", "bar", "area", "combo", "row", "pie", "table"}
+TEXT_DISPLAYS = {"heading", "text"}
+_KEY = re.compile(r"^[a-z0-9_]+$")
+_SLUG = re.compile(r"^[a-z0-9_-]+$")
+# The dashboards' folders, their versions and the trash change one thing at a time, under this lock.
+LOCK = threading.RLock()
+TRIES = 10
+NAME_MAX = 120
+
+
+class SpecError(Exception):
+    """Why a dashboard's dashboard.json was not changed, in words for the page."""
+
+
+def trash_dir():
+    return config.DATA_DIR / "trash"
+
+
+def history_dir(slug):
+    """Where a dashboard's versions are kept (app/history.py). Remove takes them along, Put back brings them."""
+    return config.DATA_DIR / "history" / slug
+
+
+def replace(source, target):
+    """os.replace, tried again for a moment while Windows says a file is in use: a poll reading a file holds it
+    for an instant. Raises the last PermissionError when it stays in use, open in another program."""
+    for attempt in range(TRIES):
+        try:
+            return os.replace(source, target)
+        except PermissionError:
+            if attempt == TRIES - 1:
+                raise
+            time.sleep(min(0.1, 0.02 * 1.5 ** attempt))
+
+
+def free_path(parent, stem, suffix=""):
+    """parent/<stem><suffix>, or <stem>-2<suffix>, -3... when that is taken (two removed in one second)."""
+    path, n = parent / f"{stem}{suffix}", 2
+    while path.exists():
+        path, n = parent / f"{stem}-{n}{suffix}", n + 1
+    return path
+
+
+def slugs():
+    if not config.DASHBOARDS_DIR.is_dir():
+        return []
+    return sorted(
+        d.name
+        for d in config.DASHBOARDS_DIR.iterdir()
+        if d.is_dir() and _SLUG.match(d.name) and (d / "dashboard.json").is_file()
+    )
+
+
+PUBLISHED_FILE = "metabase.json"
+
+
+def ensure_sample():
+    """Give a new install the example dashboard. Once the folder exists, what is in it is the user's call."""
+    sample = config.EXAMPLES_DIR / "sample"
+    if not config.DASHBOARDS_DIR.exists() and sample.is_dir():
+        shutil.copytree(sample, config.DASHBOARDS_DIR / "sample")
+
+
+def remove(slug):
+    """Take a dashboard out of the studio: its folder moves to data/trash in one step, so all of it moves or
+    none of it does, and its versions go with it (history/). The Trash can put it back.
+
+    Returns where it went, or None when there is no such dashboard. Raises OSError, PermissionError while a
+    file of it is open in another program, with the dashboard left whole and in place.
+    """
+    with LOCK:
+        if slug not in slugs():
+            return None
+        folder = config.DASHBOARDS_DIR / slug
+        target = free_path(trash_dir(), f"{slug}-{datetime.now():%Y%m%d-%H%M%S}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        replace(folder, target)
+        kept = history_dir(slug)
+        if kept.is_dir() and not (target / "history").exists():
+            try:
+                replace(kept, target / "history")
+            except OSError:
+                replace(target, folder)
+                raise
+        _shown_file(slug).unlink(missing_ok=True)
+        return target
+
+
+def write_dashboard(slug, raw):
+    """The one writer of a dashboard's dashboard.json: its keys in their order, indented by 2, in UTF-8 as it is
+    (no \\u escapes). Written whole to a temporary file beside it, then swapped in, so nobody reads half of it."""
+    path = config.DASHBOARDS_DIR / slug / "dashboard.json"
+    try:
+        body = (json.dumps(raw, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    except UnicodeEncodeError:   # a lone surrogate (a \ud800 in the file) has no UTF-8: it stays an escape
+        body = (json.dumps(raw, indent=2) + "\n").encode("utf-8")
+    draft = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+    try:
+        draft.write_bytes(body)
+        replace(draft, path)
+    finally:
+        draft.unlink(missing_ok=True)
+
+
+def assign(slug, database):
+    """Record which database a dashboard belongs to, in its dashboard.json. Does nothing when it already says so.
+    A new "database" goes right after the name and the description."""
+    path = config.DASHBOARDS_DIR / slug / "dashboard.json"
+    with LOCK:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not database or not isinstance(raw, dict) or raw.get("database") == database:
+            return
+        if "database" not in raw:
+            lead = {key: raw[key] for key in ("name", "description") if key in raw}
+            raw = {**lead, "database": database, **{key: value for key, value in raw.items() if key not in lead}}
+        raw["database"] = database
+        write_dashboard(slug, raw)
+
+
+def renamed(slug, name):
+    """(dashboard.json with a new name and every other key as it was, that name). The name is trimmed, and must be
+    one line of 1 to NAME_MAX characters that is not the name already. Raises SpecError, also when dashboard.json
+    cannot be read: a file that is not a JSON object is never written over."""
+    name = name.strip() if isinstance(name, str) else ""
+    if not name:
+        raise SpecError("Give the dashboard a name.")
+    if len(name.splitlines()) > 1:
+        raise SpecError("Keep the name to one line.")
+    if len(name) > NAME_MAX:
+        raise SpecError(f"Keep the name under {NAME_MAX} characters.")
+    try:
+        raw = json.loads((config.DASHBOARDS_DIR / slug / "dashboard.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raw = None
+    if not isinstance(raw, dict):
+        raise SpecError("Its dashboard.json could not be read, so nothing was changed. Fix the file first.")
+    if isinstance(raw.get("name"), str) and raw["name"].strip() == name:
+        raise SpecError("It has that name already.")
+    return ({**raw, "name": name} if "name" in raw else {"name": name, **raw}), name
+
+
+def version(slug):
+    """Changes whenever any file of the dashboard changes."""
+    folder = config.DASHBOARDS_DIR / slug
+    stamp = hashlib.sha256()
+    for path in sorted(folder.iterdir()) + [_shown_file(slug)]:
+        if path.is_file():
+            info = path.stat()
+            stamp.update(f"{path.name}:{info.st_mtime_ns}:{info.st_size};".encode())
+    return stamp.hexdigest()[:16]
+
+
+def content_files(slug):
+    """{name: bytes} of the dashboard itself: its dashboard.json and every query."""
+    return {path.name: path.read_bytes() for path in (config.DASHBOARDS_DIR / slug).iterdir()
+            if path.is_file() and (path.name == "dashboard.json" or path.suffix == ".sql")}
+
+
+def hash_files(files):
+    """content_hash of these {name: bytes}, from a folder or from a kept version: in the folder's own order."""
+    stamp = hashlib.sha256()
+    for name, body in sorted(files.items(), key=lambda item: PurePath(item[0])):
+        stamp.update(name.encode() + b"|" + body + b"|")
+    return stamp.hexdigest()[:16]
+
+
+def content_hash(slug):
+    """Changes when the dashboard itself changes: its dashboard.json or a query. Go live records it."""
+    return hash_files(content_files(slug))
+
+
+def published(slug):
+    """What Go live recorded for this dashboard, or {}."""
+    try:
+        state = json.loads((config.DASHBOARDS_DIR / slug / PUBLISHED_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def _shown_file(slug):
+    # Kept in data/, where Claude can neither read nor write: showing personal data is the user's say alone.
+    return config.DATA_DIR / "shown" / f"{slug}.json"
+
+
+def shown(slug):
+    """The personal-data columns the user said to show, per card: {card key: [column names]}."""
+    try:
+        raw = json.loads(_shown_file(slug).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(key): [str(c) for c in columns] for key, columns in raw.items() if isinstance(columns, list)}
+
+
+def show(slug, key, columns, on):
+    """Record the user's say on some columns of one card: show their values, or hide them again."""
+    state = shown(slug)
+    now = set(state.get(key, []))
+    now = now | set(columns) if on else now - set(columns)
+    state[key] = sorted(now)
+    state = {card: listed for card, listed in state.items() if listed}
+    path = _shown_file(slug)
+    if not state:
+        return path.unlink(missing_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+
+
+def _filters(raw, folder, problems):
+    """The dashboard's filters, checked."""
+    out = []
+    for index, entry in enumerate(raw if isinstance(raw, list) else []):
+        key = entry.get("key") if isinstance(entry, dict) else None
+        if not isinstance(key, str) or not _KEY.match(key) or any(f["key"] == key for f in out):
+            problems.append(f"Filter {index + 1}: 'key' must be unique and use only a-z, 0-9 and _.")
+            continue
+        if entry.get("type") not in filters.TYPES:
+            problems.append(f"Filter '{key}': 'type' must be one of {', '.join(filters.TYPES)}.")
+            continue
+        item = {"key": key, "name": str(entry.get("name") or key), "type": entry["type"],
+                "default": entry.get("default"), "values": None}
+        try:
+            filters.check_value(item["type"], item["default"])
+        except filters.FilterError as exc:
+            problems.append(f"Filter '{key}': the default is not usable. {exc}")
+            item["default"] = None
+        listed = entry.get("values")
+        if listed:
+            if isinstance(listed, str) and _KEY.match(listed) and (folder / f"{listed}.sql").is_file():
+                item["values"] = listed
+            else:
+                problems.append(f"Filter '{key}': 'values' must name a .sql file in the dashboard's folder.")
+        out.append(item)
+    return out
+
+
+def effective(spec, values=None):
+    """The value of every filter: the given ones, or the defaults when none are given."""
+    if not isinstance(values, dict):
+        return filters.defaults(spec["filters"])
+    return {f["key"]: values.get(f["key"]) for f in spec["filters"]}
+
+
+def query(card, spec, values=None):
+    """A card's query as it will run for these filter values. Raises filters.FilterError."""
+    if not card.get("tags"):
+        return card["sql"]
+    return filters.render(card["sql"], card["filters"], spec["filters"], effective(spec, values), spec.get("database"))
+
+
+def options_query(spec, key):
+    """The query that lists a filter's choices, or None."""
+    entry = next((f for f in spec["filters"] if f["key"] == key and f["values"]), None)
+    if entry is None:
+        return None
+    try:
+        return guard.check((config.DASHBOARDS_DIR / spec["slug"] / f"{entry['values']}.sql").read_text(encoding="utf-8"))
+    except (OSError, guard.Rejected):
+        return None
+
+
+def _int(card, field, problems, key):
+    value = card.get(field)
+    if isinstance(value, bool) or not isinstance(value, int):
+        problems.append(f"Card '{key}': '{field}' must be a whole number.")
+        return 0
+    return value
+
+
+def _overlaps(a, b):
+    return (
+        a["col"] < b["col"] + b["size_x"]
+        and b["col"] < a["col"] + a["size_x"]
+        and a["row"] < b["row"] + b["size_y"]
+        and b["row"] < a["row"] + a["size_y"]
+    )
+
+
+def load(slug):
+    if not _SLUG.match(slug or "") or slug not in slugs():
+        return None
+    folder = config.DASHBOARDS_DIR / slug
+    first = config.database()
+    out = {
+        "slug": slug,
+        "name": slug,
+        "description": "",
+        "database": first["id"] if first else None,
+        "database_name": first["name"] if first else "",
+        "version": version(slug),
+        "live": False,
+        "changed": False,
+        "url": "",
+        "filters": [],
+        "cards": [],
+        "problems": [],
+    }
+    state = published(slug)
+    if state.get("dashboard_id"):
+        out["live"] = True
+        out["url"] = state.get("url") or ""
+        out["changed"] = state.get("content") != content_hash(slug)
+    problems = out["problems"]
+    try:
+        raw = json.loads((folder / "dashboard.json").read_text(encoding="utf-8"))
+    except ValueError as exc:
+        problems.append(f"dashboard.json is not valid JSON: {exc}")
+        return out
+    except OSError as exc:
+        problems.append(f"dashboard.json could not be read: {exc}")
+        return out
+    if not isinstance(raw, dict):
+        problems.append("dashboard.json must be an object.")
+        return out
+
+    if isinstance(raw.get("name"), str) and raw["name"].strip():
+        out["name"] = raw["name"].strip()
+    else:
+        problems.append("The dashboard has no 'name'.")
+    out["description"] = raw.get("description") or ""
+    if raw.get("database"):
+        named = config.database(str(raw["database"]))
+        out["database"] = str(raw["database"])
+        out["database_name"] = named["name"] if named else out["database"]
+        if named is None:
+            problems.append(f'This dashboard belongs to the database "{out["database"]}", which is not in Settings.')
+    database = out["database"]
+    out["filters"] = _filters(raw.get("filters"), folder, problems)
+    known = {f["key"] for f in out["filters"]}
+
+    cards = raw.get("cards")
+    if not isinstance(cards, list):
+        problems.append("'cards' must be a list.")
+        return out
+
+    seen = set()
+    allowed = shown(slug)
+    for index, card in enumerate(cards):
+        if not isinstance(card, dict):
+            problems.append(f"Card {index + 1} must be an object.")
+            continue
+        key = card.get("key")
+        if not isinstance(key, str) or not _KEY.match(key):
+            problems.append(f"Card {index + 1}: 'key' must use only a-z, 0-9 and _.")
+            continue
+        if key in seen:
+            problems.append(f"Card '{key}' appears twice.")
+            continue
+        seen.add(key)
+        display = card.get("display")
+        item = {
+            "key": key,
+            "name": card.get("name") or "",
+            "display": display,
+            "viz": card.get("viz") if isinstance(card.get("viz"), dict) else {},
+            "row": _int(card, "row", problems, key),
+            "col": _int(card, "col", problems, key),
+            "size_x": max(1, _int(card, "size_x", problems, key)),
+            "size_y": max(1, _int(card, "size_y", problems, key)),
+            "sql": None,
+            "sql_hash": None,
+            "text": card.get("text") or "",
+            "filters": {str(k): str(v) for k, v in card["filters"].items()} if isinstance(card.get("filters"), dict) else {},
+            "tags": [],
+            "shown": allowed.get(key, []),
+        }
+        if item["row"] < 0 or item["col"] < 0 or item["col"] + item["size_x"] > GRID_COLUMNS:
+            problems.append(f"Card '{key}' does not fit the {GRID_COLUMNS}-column grid.")
+            item["col"] = max(0, min(item["col"], GRID_COLUMNS - 1))
+            item["size_x"] = min(item["size_x"], GRID_COLUMNS - item["col"])
+            item["row"] = max(0, item["row"])
+        if display in TEXT_DISPLAYS:
+            if not item["text"]:
+                problems.append(f"Card '{key}' has no 'text'.")
+        elif display in DATA_DISPLAYS:
+            if not item["name"]:
+                problems.append(f"Card '{key}' has no 'name'.")
+            try:
+                sql = (folder / f"{key}.sql").read_text(encoding="utf-8")
+                guard.check(sql)
+                item["sql"] = sql.strip()
+                item["sql_hash"] = db.sql_hash(sql, database)
+                item["tags"] = filters.tags(sql)
+                for tag in item["tags"]:
+                    if tag not in known:
+                        problems.append(f"Card '{key}' uses {{{{{tag}}}}}, but the dashboard has no filter with that key.")
+                    elif tag not in item["filters"]:
+                        problems.append(f"Card '{key}' uses {{{{{tag}}}}}; add it to the card's \"filters\" with its table.column.")
+                    else:
+                        try:
+                            filters.column(item["filters"][tag], database)
+                        except filters.FilterError as exc:
+                            problems.append(f"Card '{key}', filter '{tag}': {exc}")
+            except OSError:
+                problems.append(f"Card '{key}': the file {key}.sql is missing.")
+            except guard.Rejected as exc:
+                problems.append(f"Card '{key}': {exc}")
+        else:
+            problems.append(f"Card '{key}': unknown display '{display}'.")
+            continue
+        out["cards"].append(item)
+
+    placed = out["cards"]
+    for i, a in enumerate(placed):
+        for b in placed[i + 1 :]:
+            if _overlaps(a, b):
+                problems.append(f"Cards '{a['key']}' and '{b['key']}' overlap.")
+    return out
+
+
+def summary(slug):
+    spec = load(slug)
+    if spec is None:
+        return None
+    return {
+        "slug": slug,
+        "name": spec["name"],
+        "database": spec["database"],
+        "database_name": spec["database_name"],
+        "cards": len(spec["cards"]),
+        "version": spec["version"],
+        "live": spec["live"],
+        "changed": spec["changed"],
+        "problems": len(spec["problems"]),
+    }

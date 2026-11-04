@@ -1,0 +1,2 @@
+# The one package the app needs outside Python's standard library.
+psycopg2-binary==2.9.13

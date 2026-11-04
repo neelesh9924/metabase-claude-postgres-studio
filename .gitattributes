@@ -1,0 +1,7 @@
+# Text files are LF everywhere, whatever core.autocrlf says: the shared attachments files are
+# then byte for byte as the owner's other studios have them.
+* text=auto eol=lf
+# Windows Script Host is a CRLF-native tool.
+*.vbs text eol=crlf
+*.ico binary
+*.png binary

@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Metabase Claude Studio</title>
+  <link rel="icon" type="image/svg+xml" href="/static/icon.svg">
+  <script src="/static/theme.js"></script>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/pages.css">
+  <link rel="stylesheet" href="/static/attach.css">
+  <link rel="stylesheet" href="/static/keys.css">
+</head>
+<body>
+  <div class="app" id="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <img class="logo" src="/static/icon.svg" width="30" height="30" alt="">
+        <span class="brand-text"><span>Metabase Claude Studio</span><small>for Postgres</small></span>
+      </div>
+      <button id="newDash" class="btn soft wide" type="button"><span>New dashboard</span></button>
+      <div class="side-label" id="draftsLabel" hidden>Drafts</div>
+      <nav id="drafts" class="nav drafts" aria-label="Drafts" hidden></nav>
+      <div class="side-label">Dashboards</div>
+      <nav id="list" class="nav" aria-label="Dashboards"></nav>
+      <div class="side-links">
+        <button id="openSettings" class="nav-item" type="button"><span class="nav-text"><span class="name">Settings</span></span></button>
+        <button id="openTrash" class="nav-item" type="button" title="The dashboards, drafts and conversations you removed">
+          <span class="nav-text"><span class="name">Trash</span></span></button>
+        <button id="themeBtn" class="btn ghost small square" type="button" aria-label="Switch to dark" title="Switch to dark"></button>
+      </div>
+      <p id="sideFoot" class="side-foot">
+        <span>Read-only. The database is queried only when a card loads, when you refresh, or when you ask Claude.</span>
+      </p>
+    </aside>
+
+    <main class="main">
+      <header id="top" class="topbar" hidden>
+        <div class="titles">
+          <h1 id="title"></h1>
+          <span id="status" role="status"></span>
+        </div>
+        <div class="top-actions">
+          <button id="refreshAll" class="btn" type="button" title="Run every card's query again"><span class="label">Refresh data</span></button>
+          <button id="openLive" class="btn" type="button" hidden><span class="label">Open in Metabase</span></button>
+          <button id="goLive" class="btn primary" type="button" aria-disabled="true"><span>Go live</span></button>
+          <button id="dashSettings" class="btn ghost square" type="button" aria-label="This dashboard’s settings"
+                  title="Its name, its versions, and Remove" aria-disabled="true"></button>
+          <button id="showAssist" class="btn ghost" type="button" aria-controls="assist" hidden><span>Ask Claude</span></button>
+        </div>
+      </header>
+      <div class="content">
+        <div id="dashPage">
+          <div id="flash" class="notice" hidden></div>
+          <p id="desc" class="lede" hidden></p>
+          <div id="notice" class="notice" hidden></div>
+          <div id="filters" class="filters" hidden></div>
+          <div id="grid" class="grid"></div>
+          <div id="empty" class="empty" hidden>
+            <div id="emptyMark" class="empty-mark"></div>
+            <h1 id="emptyTitle">No dashboards yet</h1>
+            <p>Describe the one you want and Claude plans it, then builds it here with your data.</p>
+            <button id="emptyNew" class="btn primary" type="button"><span>New dashboard</span></button>
+            <button id="emptyTrash" class="btn ghost" type="button" hidden><span>Open the Trash</span></button>
+          </div>
+        </div>
+        <div id="settingsPage" hidden></div>
+        <div id="trashPage" hidden></div>
+      </div>
+    </main>
+
+    <aside class="assist" id="assist" aria-labelledby="assistTitle">
+      <header class="assist-head">
+        <div id="assistMark" class="assist-mark"></div>
+        <div class="assist-heading">
+          <h2 class="assist-title" id="assistTitle">Ask Claude</h2>
+          <div class="assist-context" id="assistContext"></div>
+        </div>
+        <button id="assistClear" class="btn ghost small square" type="button" aria-label="Clear this conversation…"
+                title="Clear this conversation. It moves to the Trash; the dashboard itself is not changed."></button>
+        <button id="hideAssist" class="btn ghost small square" type="button" aria-label="Hide this panel" title="Hide this panel"></button>
+      </header>
+      <div class="assist-thread" id="thread">
+        <div id="assistEmpty" hidden></div>
+        <div id="messages" role="log" aria-label="The conversation" aria-relevant="additions"></div>
+        <div id="assistOffer" class="assist-offer" hidden></div>
+        <div id="activity"></div>
+      </div>
+      <form class="assist-form" id="askForm">
+        <label class="ask-db" id="askDb" hidden>
+          <span>Database</span>
+          <select id="askDbSelect" class="input"></select>
+        </label>
+        <div class="composer" id="composer">
+          <div id="askFiles" aria-label="Files to send"></div>
+          <label class="sr-only" for="askText">Your request</label>
+          <textarea id="askText" rows="2" aria-describedby="askHint askRefused"></textarea>
+          <div class="composer-foot">
+            <button id="attachBtn" class="btn ghost small square" type="button" aria-label="Attach files"
+                    title="Attach files of any kind. You can also drop them here or paste them."></button>
+            <span class="assist-hint" id="askHint"></span>
+            <span class="assist-hint refused" id="askRefused" hidden></span>
+            <button id="stopBtn" class="btn small danger" type="button" hidden><span class="label">Stop</span></button>
+            <button id="sendBtn" class="btn primary small square" type="submit" aria-label="Send" title="Send (Enter)"></button>
+          </div>
+        </div>
+      </form>
+    </aside>
+  </div>
+  <dialog id="liveDialog" class="modal"></dialog>
+  <div id="announce" class="sr-only" role="status"></div>
+  <div id="alarm" class="sr-only" role="alert"></div>
+  <script src="/static/vendor/echarts.min.js"></script>
+  <script src="/static/time.js"></script>
+  <script src="/static/settings.js"></script>
+  <script src="/static/trash.js"></script>
+  <script src="/static/versions.js"></script>
+  <script src="/static/progress.js"></script>
+  <script src="/static/palette.js"></script>
+  <script src="/static/resize.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

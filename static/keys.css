@@ -1,0 +1,52 @@
+/* The keys (static/palette.js) and the Ask Claude panel's edge (static/resize.js), as in the owner's other studios.
+   Loaded after app.css and pages.css, and uses their tokens only.
+   Sections: keys · skip links and the palette (Ctrl+K) · the panel's edge */
+
+/* ───────────── keys ───────────── */
+kbd { display: inline-block; padding: 1px 7px; border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: 6px;
+  background: var(--surface-2); color: var(--text-2); font: 600 12px var(--font); white-space: nowrap; }
+.keys-wrap { overflow-x: auto; }
+/* app.css's cells are a card's table cells: one line each, cut short */
+.keys th, .keys td { max-width: none; padding: 6px 9px; vertical-align: top; white-space: normal; overflow: visible; }
+.keys th { position: static; color: var(--text-2); }
+.keys td:first-child { white-space: nowrap; }
+.keys kbd { margin: 1px 0; }
+
+/* ───────────── skip links and the palette (Ctrl+K) ───────────── */
+/* the sidebar's last row takes the search button too: a little tighter, so Settings and Trash keep their whole names */
+.side-links { gap: 2px; }
+.side-links .nav-item { gap: 5px; padding: 7px 6px; }
+.skip-link { position: fixed; top: -80px; left: 12px; z-index: 1000; padding: 10px 14px; border-radius: var(--radius-s);
+  background: var(--accent); color: var(--on-accent); font-weight: 600; text-decoration: none; box-shadow: var(--shadow-2); }
+.skip-link:focus { top: 12px; outline: 2px solid var(--text); outline-offset: 2px; }
+.modal.palette { width: min(640px, calc(100vw - 32px)); max-height: min(560px, 78vh); margin-top: 11vh; padding: 0; overflow: hidden; }
+.modal.palette[open] { display: flex; flex-direction: column; }
+.palette-box { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.palette-search { flex: none; display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--line); color: var(--text-3); }
+.palette-input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: 15.5px var(--font); }
+.palette-input::placeholder { color: var(--text-3); opacity: 1; }
+.palette-search:has(.palette-input:focus-visible) { box-shadow: inset 0 -2px 0 var(--accent); }
+.palette-list { flex: 1; min-height: 0; overflow-y: auto; padding: 6px; }
+.palette-group + .palette-group { margin-top: 4px; }
+.palette-group-label { padding: 8px 10px 4px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); }
+.palette-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 9px; cursor: pointer; }
+.palette-item[aria-selected="true"] { background: var(--accent-soft); color: var(--accent-ink); box-shadow: inset 3px 0 0 var(--accent); }
+.palette-icon { flex: none; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 8px; background: var(--surface-2); color: var(--text-2); }
+.palette-item[aria-selected="true"] .palette-icon { background: var(--surface); color: var(--accent-ink); }
+.palette-label { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+.palette-tag { font-size: 11px; font-weight: 600; padding: 0 6px; border-radius: 999px; background: var(--surface-3); color: var(--text-2); }
+.palette-hint { flex: 0 1 auto; max-width: 45%; font-size: 12px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.palette-item[aria-selected="true"] .palette-hint { color: var(--accent-ink); }
+.palette-empty { padding: 28px 12px; text-align: center; color: var(--text-3); }
+.palette-foot { flex: none; display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 9px 16px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--text-3); }
+.palette-foot kbd { margin-right: 2px; }
+
+/* ───────────── the panel's edge ───────────── */
+body.resizing { cursor: col-resize; user-select: none; }
+.assist-resize { position: absolute; top: 0; bottom: 0; left: -4px; width: 8px; z-index: 30; cursor: col-resize; touch-action: none; }
+.assist-resize::after { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 2px; background: transparent; transition: background .12s; }
+.assist-resize:hover::after, .assist-resize:focus-visible::after, body.resizing .assist-resize::after { background: var(--accent); }
+.assist-resize:focus-visible { outline: none; }
+/* the New dashboard screen is the conversation itself; below 900 px the panel sits under the page, as wide as it */
+.app.on-new .assist-resize { display: none; }
+@media (max-width: 899.98px) { .assist-resize { display: none; } }

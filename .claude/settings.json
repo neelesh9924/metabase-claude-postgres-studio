@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./data/**)",
+      "Edit(./data/**)",
+      "Read(./.venv/**)",
+      "Read(./.env)"
+    ],
+    "allow": [
+      "Bash(python studio.py tables:*)",
+      "Bash(python studio.py describe:*)",
+      "Bash(python studio.py check:*)",
+      "Bash(python studio.py info:*)"
+    ]
+  }
+}

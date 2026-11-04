@@ -1,0 +1,100 @@
+import http.client
+import json
+import unittest
+from datetime import datetime
+from unittest import mock
+
+from support import StudioCase, serve, watching_shares
+
+from app import config, specs
+
+
+class RemoveTest(StudioCase):
+    def make(self, slug="ops"):
+        folder = self.tmp / "dashboards" / slug
+        folder.mkdir()
+        (folder / "n.sql").write_text("select 7 as n", encoding="utf-8")
+        (folder / "dashboard.json").write_text(json.dumps({"name": "Ops", "cards": [
+            {"key": "n", "name": "N", "display": "scalar", "row": 0, "col": 0, "size_x": 6, "size_y": 3}]}), encoding="utf-8")
+        (folder / "metabase.json").write_text(json.dumps({"dashboard_id": 12, "url": "http://mb/dashboard/12"}), encoding="utf-8")
+
+    def post(self, path, body):
+        conn = http.client.HTTPConnection("127.0.0.1", config.PORT, timeout=20)
+        conn.request("POST", path, body=json.dumps(body), headers={
+            "Host": f"127.0.0.1:{config.PORT}", "Content-Type": "application/json",
+            "Origin": f"http://127.0.0.1:{config.PORT}", "Cookie": "studio_session=test-token"})
+        reply = json.loads(conn.getresponse().read())
+        conn.close()
+        return reply
+
+    def test_a_removed_dashboard_leaves_the_studio_and_can_be_put_back(self):
+        self.make()
+        moved = specs.remove("ops")
+        self.assertEqual(specs.slugs(), [])
+        self.assertEqual(moved.parent, self.tmp / "data" / "trash")
+        self.assertEqual(sorted(p.name for p in moved.iterdir()), ["dashboard.json", "metabase.json", "n.sql"])
+        self.assertIsNone(specs.remove("ops"))
+        for bad in ["../data", "", None, "no/such"]:
+            self.assertIsNone(specs.remove(bad))
+
+    def test_a_share_named_as_the_dashboard_is_never_opened(self):
+        serve(self)
+        self.make()
+        with watching_shares() as tried:
+            for slug in ["//attacker.example/share/x", "\\\\attacker.example\\share\\x"]:
+                self.assertEqual(self.post("/api/remove", {"slug": slug}), {"error": "No such dashboard."})
+        self.assertEqual(tried, [])
+        self.assertEqual(specs.slugs(), ["ops"])
+
+    def test_from_the_page_and_metabase_is_left_alone(self):
+        assistant = serve(self).studio.assistant
+        self.make()
+        assistant._add("ops", "user", "make it blue")
+        with mock.patch("urllib.request.urlopen", side_effect=AssertionError("Metabase must not be called")):
+            reply = self.post("/api/remove", {"slug": "ops"})
+        self.assertEqual(specs.slugs(), [])
+        trashed = next((self.tmp / "data" / "trash").iterdir())
+        self.assertEqual(reply, {"ok": True, "key": trashed.name, "name": "Ops"})
+        self.assertIn("make it blue", (trashed / "conversation.json").read_text(encoding="utf-8"))
+        self.assertEqual(assistant.thread("ops"), [])
+        self.assertEqual(self.post("/api/remove", {"slug": "ops"}), {"error": "No such dashboard."})
+
+    def test_a_file_open_in_another_program_leaves_it_whole(self):
+        serve(self)
+        self.make()
+        before = sorted(p.name for p in (self.tmp / "dashboards" / "ops").iterdir())
+        with mock.patch("os.replace", side_effect=PermissionError(32, "The file is in use by another process")):
+            reply = self.post("/api/remove", {"slug": "ops"})
+        self.assertEqual(reply, {"error": "A file of “Ops” is open in another program. Close it and try again."})
+        self.assertEqual(specs.slugs(), ["ops"])
+        self.assertEqual(sorted(p.name for p in (self.tmp / "dashboards" / "ops").iterdir()), before)
+        self.assertFalse((self.tmp / "data" / "trash").exists() and any((self.tmp / "data" / "trash").iterdir()))
+
+    def test_two_in_one_second_both_go_to_the_trash(self):
+        moment = mock.Mock(now=mock.Mock(return_value=datetime(2026, 10, 27, 15, 49, 12)))
+        with mock.patch.object(specs, "datetime", moment):
+            self.make()
+            first = specs.remove("ops")
+            self.make()
+            second = specs.remove("ops")
+        self.assertEqual((first.name, second.name), ("ops-20261027-154912", "ops-20261027-154912-2"))
+
+    def test_not_while_claude_is_working_on_it(self):
+        assistant = serve(self).studio.assistant
+        self.make()
+        assistant.job = mock.Mock(status="running", slug="ops", key="ops")
+        self.assertIn("Claude is still working", self.post("/api/remove", {"slug": "ops"})["error"])
+        self.assertEqual(specs.slugs(), ["ops"])
+        assistant.job = None
+
+    def test_the_example_is_given_once_only(self):
+        with mock.patch.object(config, "DASHBOARDS_DIR", self.tmp / "fresh"):
+            specs.ensure_sample()
+            self.assertEqual(specs.slugs(), ["sample"])
+            specs.remove("sample")
+            specs.ensure_sample()
+            self.assertEqual(specs.slugs(), [], "removing the example must stick")
+
+
+if __name__ == "__main__":
+    unittest.main()

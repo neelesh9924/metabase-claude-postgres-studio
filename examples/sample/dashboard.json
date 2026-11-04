@@ -1,0 +1,54 @@
+{
+  "name": "Sample (made-up numbers)",
+  "description": "Shows every card type. The numbers are generated in the query; no business table is read.",
+  "cards": [
+    { "key": "today_heading", "display": "heading", "text": "Today", "row": 0, "col": 0, "size_x": 24, "size_y": 1 },
+    {
+      "key": "tickets_today", "name": "Tickets today", "display": "scalar",
+      "row": 1, "col": 0, "size_x": 6, "size_y": 3
+    },
+    {
+      "key": "revenue_trend", "name": "Revenue", "display": "smartscalar",
+      "viz": {
+        "scalar.field": "Revenue",
+        "column_settings": { "[\"name\",\"Revenue\"]": { "number_style": "currency", "currency": "INR", "decimals": 0 } }
+      },
+      "row": 1, "col": 6, "size_x": 6, "size_y": 3
+    },
+    {
+      "key": "trips_trend", "name": "Trips", "display": "smartscalar",
+      "viz": { "scalar.field": "Trips" },
+      "row": 1, "col": 12, "size_x": 6, "size_y": 3
+    },
+    {
+      "key": "active_buses", "name": "Active buses", "display": "scalar",
+      "row": 1, "col": 18, "size_x": 6, "size_y": 3
+    },
+    { "key": "trend_heading", "display": "heading", "text": "Last 30 days", "row": 4, "col": 0, "size_x": 24, "size_y": 1 },
+    {
+      "key": "daily_tickets", "name": "Tickets per day", "display": "line",
+      "viz": { "graph.dimensions": ["Day"], "graph.metrics": ["Tickets"] },
+      "row": 5, "col": 0, "size_x": 12, "size_y": 6
+    },
+    {
+      "key": "daily_by_channel", "name": "Tickets per day by channel", "display": "bar",
+      "viz": { "graph.dimensions": ["Day", "Channel"], "graph.metrics": ["Tickets"], "stackable.stack_type": "stacked" },
+      "row": 5, "col": 12, "size_x": 12, "size_y": 6
+    },
+    {
+      "key": "top_routes", "name": "Top routes by tickets", "display": "row",
+      "viz": { "graph.dimensions": ["Route"], "graph.metrics": ["Tickets"] },
+      "row": 11, "col": 0, "size_x": 8, "size_y": 6
+    },
+    {
+      "key": "payment_split", "name": "Tickets by payment mode", "display": "pie",
+      "viz": { "pie.dimension": "Payment mode", "pie.metric": "Tickets" },
+      "row": 11, "col": 8, "size_x": 8, "size_y": 6
+    },
+    {
+      "key": "operators", "name": "Operators", "display": "table",
+      "viz": { "column_settings": { "[\"name\",\"Revenue\"]": { "number_style": "currency", "currency": "INR", "decimals": 0 } } },
+      "row": 11, "col": 16, "size_x": 8, "size_y": 6
+    }
+  ]
+}
